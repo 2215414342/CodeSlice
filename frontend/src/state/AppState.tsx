@@ -219,10 +219,12 @@ interface AppState {
   /** Open a read-only diff tab (work tree when `rev` is omitted). */
   openDiff: (path: string, rev?: string, highlight?: { start: number; end: number } | null) => void
   /**
-   * Jump from a note reference: switch to the commit the reference belongs to,
-   * reveal that commit/file in source control, and open its diff.
+   * Jump from a note reference into the code itself.
+   *
+   * Current references open the work tree/file at their resolved lines; only
+   * references whose exact block is gone switch to the historical commit.
    */
-  openRefDiff: (
+  openRefCode: (
     rev: string | null,
     path: string,
     highlight?: { start: number; end: number } | null,
@@ -404,15 +406,40 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
    * the commit the note was written against, so showing the work tree's diff
    * would answer a different question.
    */
-  const openRefDiff = useCallback(
+  /**
+   * Open the file, not the diff, for a note reference.
+   *
+   * If the note's exact block still exists in the current file, `rev` is null
+   * and the editor shows the live work tree at the re-resolved line. If it is
+   * gone, `rev` is the note's commit and the editor shows that revision read
+   * only. Reusing the same scope avoids dropping every other file tab on
+   * repeated clicks.
+   */
+  const openRefCode = useCallback(
     (rev: string | null, path: string, highlight?: { start: number; end: number } | null) => {
-      setRevision(rev ? { kind: 'rev', sha: rev, shaShort: rev.slice(0, 7) } : { kind: 'worktree' })
       const range = highlight && highlight.start > 0 ? highlight : null
+      const sameScope =
+        rev === null
+          ? revision.kind === 'worktree'
+          : revision.kind === 'rev' && revision.sha === rev
+      if (!sameScope) {
+        setRevision(rev ? { kind: 'rev', sha: rev, shaShort: rev.slice(0, 7) } : { kind: 'worktree' })
+      }
       setSidebarTabState('scm')
       setScmFocus({ rev, path, highlight: range, nonce: Date.now(), source: 'note' })
-      openDiff(path, rev ?? undefined, range)
+      openFileTab(path, range, rev ?? undefined)
+      if (range) {
+        setCitationHighlight({
+          path,
+          start_line: range.start,
+          end_line: range.end,
+          symbol: null,
+          nonce: Date.now(),
+          source: 'navigation',
+        })
+      }
     },
-    [openDiff, setRevision, setSidebarTabState],
+    [openFileTab, revision, setRevision, setSidebarTabState],
   )
 
   const showNavEntry = useCallback(
@@ -708,7 +735,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       scmFocus,
       focusScm,
       openDiff,
-      openRefDiff,
+      openRefCode,
     }),
     [
       project,
@@ -758,7 +785,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       scmFocus,
       focusScm,
       openDiff,
-      openRefDiff,
+      openRefCode,
     ],
   )
 

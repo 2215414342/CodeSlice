@@ -25,7 +25,7 @@ export function NoteReader(): ReactNode {
     setActiveConversationId,
     refreshKey,
     revision,
-    openRefDiff,
+    openRefCode,
   } = useApp()
   const [draft, setDraft] = useState<{ title: string; fileName: string; content: string } | null>(null)
   const [saving, setSaving] = useState(false)
@@ -40,13 +40,16 @@ export function NoteReader(): ReactNode {
   const note = scoped && scoped.id === noteView?.id ? scoped : noteView
 
   useEffect(() => {
-    if (!noteView || !rev) {
+    if (!noteView) {
       setScoped(null)
       return
     }
     const controller = new AbortController()
+    // Fetch even in the work-tree scope: the list payload does not carry refs,
+    // and the reader needs their current/historical resolution to render the
+    // clickable reference list.
     api
-      .getNote(noteView.id, controller.signal, rev)
+      .getNote(noteView.id, controller.signal, rev ?? undefined)
       .then((fresh) => {
         if (!controller.signal.aborted) setScoped(fresh)
       })
@@ -174,6 +177,32 @@ export function NoteReader(): ReactNode {
     }
   }
 
+  /**
+   * One click policy for both the reference list and inline `path:line` links:
+   * exact current match opens the live file at its re-resolved lines; anything
+   * else opens the commit the note was written from.
+   */
+  const openRef = (ref: NoteRef) => {
+    const current = ref.status === 'unchanged' || ref.status === 'moved'
+    const targetRev = current ? rev : (ref.resolved_commit || ref.commit_sha || rev)
+    const start = ref.resolved_start_line ?? ref.start_line
+    const end = ref.resolved_end_line ?? ref.end_line
+    openRefCode(targetRev, ref.path, { start, end })
+  }
+
+  const openCitation = (path: string, start: number, end: number) => {
+    const match = note.refs?.find(
+      (ref) => ref.path === path && ref.start_line <= end && ref.end_line >= start,
+    )
+    if (match) {
+      openRef(match)
+      return
+    }
+    // A citation with no saved ref (for example an older note) still gets the
+    // best-effort work-tree jump.
+    openRefCode(null, path, { start, end })
+  }
+
   return (
     <div className="note-reader">
       <div className="note-reader-bar">
@@ -288,11 +317,18 @@ export function NoteReader(): ReactNode {
           <div className="note-refs-head">
             <Icon name="git-branch" size={12} />
             <span>{note.refs.length} 处代码引用</span>
-            <span className="muted">{rev ? '按笔记写作时的提交解析' : '点击可跳到源代码管理中的对应变更'}</span>
+            <span className="muted">
+              {rev ? `按 ${rev.slice(0, 7)} 解析` : '仍存在看最新代码，已删除回写作提交'}
+            </span>
           </div>
           <div className="note-ref-list">
             {note.refs.map((ref) => {
-              const sha = ref.resolved_commit || ref.commit_sha
+              const current = ref.status === 'unchanged' || ref.status === 'moved'
+              // Current means the exact block is still in the file; line numbers
+              // are the re-resolved ones. Historical/missing falls back to the
+              // commit the note was written from and shows that whole commit.
+              const targetRev = current ? rev : (ref.resolved_commit || ref.commit_sha || rev)
+              const sha = targetRev
               const start = ref.resolved_start_line ?? ref.start_line
               const end = ref.resolved_end_line ?? ref.end_line
               return (
@@ -300,8 +336,8 @@ export function NoteReader(): ReactNode {
                   key={ref.id}
                   type="button"
                   className={`note-ref-row${ref.status === 'modified' ? ' changed' : ''}`}
-                  title={`${ref.path}:${start}-${end}${sha ? ` @ ${sha.slice(0, 7)}` : ''}`}
-                  onClick={() => openRefDiff(sha ?? rev, ref.path, { start, end })}
+                  title={`${ref.path}:${start}-${end}${sha ? ` @ ${sha.slice(0, 7)}` : ' · 最新工作区'}`}
+                  onClick={() => openRef(ref)}
                 >
                   <span className={`ref-status ${ref.status}`}>{REF_STATUS_LABEL[ref.status] ?? ref.status}</span>
                   <span className="note-ref-path">
@@ -309,7 +345,15 @@ export function NoteReader(): ReactNode {
                     <span className="muted">:{start}–{end}</span>
                     {ref.symbol ? <span className="note-ref-symbol">{ref.symbol}</span> : null}
                   </span>
-                  {sha ? <span className="scm-sha">{sha.slice(0, 7)}</span> : <span className="muted">工作区</span>}
+                  {current ? (
+                    <span className="badge ok" title={rev ? '这段代码在当前查看的版本里' : '这段代码在当前工作区里'}>
+                      {rev ? '当前版本' : '最新'}
+                    </span>
+                  ) : sha ? (
+                    <span className="scm-sha">{sha.slice(0, 7)}</span>
+                  ) : (
+                    <span className="muted">工作区</span>
+                  )}
                 </button>
               )
             })}
@@ -357,7 +401,7 @@ export function NoteReader(): ReactNode {
       ) : (
         <div className="note-reader-scroll">
           <article className="note-doc">
-            <Markdown text={body} />
+            <Markdown text={body} onCite={openCitation} />
           </article>
         </div>
       )}

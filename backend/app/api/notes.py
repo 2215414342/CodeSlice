@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
 from app.api.deps import ProjectDep, TokenDep
-from app.core.errors import NotFound
+from app.core.errors import InvalidInput, NotFound
 from app.services import anchors, note_versions, notegen, notes_export, notes_index, paths, revisions
 from app.storage import repo
 
@@ -201,6 +201,18 @@ def get_note(note_id: int, _: TokenDep, rev: str = "") -> dict[str, Any]:
         payload["scope_rev"] = sha
         payload["refs"] = note_versions.resolve_refs(root, refs, sha)
         return payload
+    # Work-tree scope: resolve refs against the files on disk first. Only a
+    # block that has disappeared from the current file falls back to the
+    # commit the note was written from.
+    project = repo.get_project(int(note["project_id"]))
+    if project is not None:
+        try:
+            root = paths.resolve_root(project["path"])
+        except (InvalidInput, OSError):
+            root = None
+        if root is not None:
+            payload["refs"] = note_versions.resolve_refs_worktree(root, refs)
+            return payload
     payload["refs"] = refs
     return payload
 

@@ -18,7 +18,8 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from app.services import git_service
+from app.services import git_service, paths
+from app.core.errors import InvalidInput
 
 STATUS_UNCHANGED = "unchanged"
 STATUS_MOVED = "moved"
@@ -103,6 +104,83 @@ def resolve_refs(root: Path, refs: list[dict[str, Any]], rev: str) -> list[dict[
                 "resolved_commit": resolved_commit,
                 "checked_at": None,
                 "scope_rev": rev,
+            }
+        )
+    return out
+
+
+def _worktree_lines(root: Path, path: str) -> list[str] | None:
+    """The file as it exists on disk, or ``None`` when the path is gone."""
+    try:
+        resolved = paths.resolve_in_project(root, path)
+    except InvalidInput:
+        return None
+    if not resolved.is_file():
+        return None
+    try:
+        return resolved.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+
+def resolve_refs_worktree(root: Path, refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Resolve note refs against the *work tree*, preferring current code.
+
+    The note keeps the range and content it was written against. Opening it
+    later must answer one question: is that exact block still in the current
+    file? If yes, the reference is current; line numbers may have moved, so the
+    whole file is searched and the new range is returned. If the block is gone
+    from the work tree but still exists in the recorded commit, it is historical
+    and the caller should fall back to that commit. Only when neither contains
+    the block is it "modified" — the file may still exist, but the quoted code
+    no longer does.
+    """
+    out: list[dict[str, Any]] = []
+    cache: dict[str, list[str] | None] = {}
+    has_git = git_service.is_repo(root)
+
+    for reference in refs:
+        path = str(reference.get("path") or "")
+        status = STATUS_MODIFIED
+        start = int(reference.get("start_line") or 1)
+        end = int(reference.get("end_line") or start)
+        resolved_commit: str | None = None
+
+        if path not in cache:
+            cache[path] = _worktree_lines(root, path)
+        lines = cache[path]
+
+        if lines is not None and _matches(reference, lines, start, end):
+            status = STATUS_UNCHANGED
+        else:
+            found = _find(lines, reference) if lines is not None else None
+            if found is not None:
+                status = STATUS_MOVED
+                length = end - start + 1
+                start = found
+                end = found + length - 1
+            else:
+                base = reference.get("commit_sha")
+                if has_git and base:
+                    raw = git_service.show_bytes(root, str(base), path, max_bytes=2 * 1024 * 1024)
+                    if raw is not None:
+                        base_lines = raw.decode("utf-8", errors="replace").splitlines()
+                        recorded_start = int(reference.get("start_line") or 1)
+                        recorded_end = int(reference.get("end_line") or recorded_start)
+                        if _matches(reference, base_lines, recorded_start, recorded_end):
+                            status = STATUS_HISTORICAL
+                            resolved_commit = str(base)
+                if status == STATUS_MODIFIED and lines is None:
+                    status = STATUS_DELETED
+
+        out.append(
+            {
+                **reference,
+                "status": status,
+                "resolved_start_line": start,
+                "resolved_end_line": end,
+                "resolved_commit": resolved_commit,
+                "checked_at": None,
             }
         )
     return out

@@ -94,6 +94,51 @@ def test_refs_resolve_inside_the_commit(git_project: dict, client):
     assert changed["refs"][0]["resolved_commit"] == older
 
 
+def test_refs_prefer_the_current_file_when_the_block_still_exists(git_project: dict, client):
+    root = Path(git_project["path"])
+    older = _git(root, "rev-parse", "HEAD~1").strip()
+    # The note records an older commit, but the exact block it quotes is still
+    # present in the work tree. Opening it should stay on the live file.
+    note = _add_note(git_project, older, "def f():\n    return 2")
+    result = client.get(f"/api/notes/{note['id']}").json()
+    ref = result["refs"][0]
+    assert ref["status"] == "unchanged"
+    assert ref["resolved_commit"] is None
+    assert (ref["resolved_start_line"], ref["resolved_end_line"]) == (1, 2)
+
+
+def test_refs_follow_the_block_when_lines_move(git_project: dict, client):
+    root = Path(git_project["path"])
+    (root / "a.py").write_text("# header\n\n# note\ndef f():\n    return 2\n", encoding="utf-8")
+    note = _add_note(git_project, None, "def f():\n    return 2")
+    result = client.get(f"/api/notes/{note['id']}").json()
+    ref = result["refs"][0]
+    assert ref["status"] == "moved"
+    assert ref["resolved_commit"] is None
+    assert (ref["resolved_start_line"], ref["resolved_end_line"]) == (4, 5)
+
+
+def test_refs_fall_back_to_history_when_the_file_is_gone(git_project: dict, client):
+    root = Path(git_project["path"])
+    head = _git(root, "rev-parse", "HEAD").strip()
+    note = _add_note(git_project, head, "def f():\n    return 2")
+    (root / "a.py").unlink()
+    result = client.get(f"/api/notes/{note['id']}").json()
+    ref = result["refs"][0]
+    assert ref["status"] == "historical"
+    assert ref["resolved_commit"] == head
+    assert (ref["resolved_start_line"], ref["resolved_end_line"]) == (1, 2)
+
+
+def test_refs_are_deleted_only_when_neither_worktree_nor_commit_matches(git_project: dict, client):
+    root = Path(git_project["path"])
+    head = _git(root, "rev-parse", "HEAD").strip()
+    note = _add_note(git_project, head, "def f():\n    return 9")
+    (root / "a.py").unlink()
+    result = client.get(f"/api/notes/{note['id']}").json()
+    assert result["refs"][0]["status"] == "deleted"
+
+
 def test_ref_to_a_file_missing_at_that_revision_is_deleted(git_project: dict, client):
     root = Path(git_project["path"])
     older = _git(root, "rev-parse", "HEAD~1").strip()

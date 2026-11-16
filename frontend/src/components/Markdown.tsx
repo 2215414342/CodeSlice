@@ -30,26 +30,35 @@ export interface MarkdownProps {
   resolveImage?: (src: string) => string | null
   /** Text shown under an image that could not be resolved. */
   imageFallback?: (src: string) => string
+  /**
+   * Custom handler for `path:line-line` citations. The note reader uses this to
+   * resolve the reference against the note's saved ranges (current vs history)
+   * instead of the generic "open the work tree" behavior.
+   */
+  onCite?: (path: string, start: number, end: number) => void
 }
 
 export const Markdown = memo(function Markdown({
   text,
   resolveImage,
   imageFallback,
+  onCite,
 }: MarkdownProps): ReactNode {
   const blocks = useMemo(() => parseBlocks(text), [text])
   return (
     <ImageResolver.Provider value={resolveImage ?? null}>
-      <div className="md">
-        {blocks.map((block, index) => (
-          <Block
-            key={index}
-            block={block}
-            resolveImage={resolveImage}
-            imageFallback={imageFallback}
-          />
-        ))}
-      </div>
+      <CiteResolver.Provider value={onCite ?? null}>
+        <div className="md">
+          {blocks.map((block, index) => (
+            <Block
+              key={index}
+              block={block}
+              resolveImage={resolveImage}
+              imageFallback={imageFallback}
+            />
+          ))}
+        </div>
+      </CiteResolver.Provider>
     </ImageResolver.Provider>
   )
 })
@@ -62,6 +71,7 @@ export const Markdown = memo(function Markdown({
  * need the prop threaded through every call site.
  */
 const ImageResolver = createContext<((src: string) => string | null) | null>(null)
+const CiteResolver = createContext<((path: string, start: number, end: number) => void) | null>(null)
 
 /* --------------------------------- parsing -------------------------------- */
 
@@ -499,6 +509,7 @@ function Inline({ text }: { text: string }): ReactNode {
 function TokenNode({ token }: { token: Token }): ReactNode {
   const { reveal } = useApp()
   const resolveImage = useContext(ImageResolver)
+  const onCite = useContext(CiteResolver)
 
   switch (token.type) {
     case 'code':
@@ -526,7 +537,11 @@ function TokenNode({ token }: { token: Token }): ReactNode {
           type="button"
           className="md-cite"
           title={`跳转到 ${token.path} 第 ${token.start}-${token.end} 行`}
-          onClick={() => reveal(token.path ?? '', token.start, token.end)}
+          onClick={() =>
+            onCite
+              ? onCite(token.path ?? '', token.start ?? 1, token.end ?? token.start ?? 1)
+              : reveal(token.path ?? '', token.start, token.end)
+          }
         >
           {token.text}
         </button>

@@ -497,7 +497,8 @@ P2 才把图谱接上（成本最高，且依赖 P1 的取数层）；P3 是三�
 - 历史提交的变更集 = **该提交 vs 第一父提交**（root commit 全部算 A）；
 - 工作区变更集 = 工作区（含 untracked）vs `HEAD`；
 - 面板结构 = 上方「更改」列表 + 下方提交时间线；点提交即切换全局 revision scope；
-- 笔记引用点击 = 切到引用所属提交、展开并高亮源代码管理里的提交/文件、打开 diff 并定位 hunk。
+- 笔记引用点击 = 先看当前工作区：同一文件里能精确匹配笔记保存的代码片段，就打开最新文件并定位到重算后的行号；
+  片段已不存在时，才切到笔记写作时的 commit，打开该版本的整份文件并高亮旧行。
 
 **后端**
 
@@ -519,8 +520,37 @@ P2 才把图谱接上（成本最高，且依赖 P1 的取数层）；P3 是三�
   放到 hover 卡片，减少每行信息密度；
 - `DiffPane.tsx` 用 `@monaco-editor/react` 的 `DiffEditor` 做双栏只读 diff，标题为
   `文件 (旧sha) ↔ 文件 (新sha)`；
-- `AppState.tsx` 增加 diff 标签、`ScmFocus`、`openDiff` / `focusScm` / `openRefDiff`；
+- `AppState.tsx` 增加 diff 标签、`ScmFocus`、`openDiff` / `focusScm` / `openRefCode`；
   切 revision 时关闭 file/diff 标签（它们是快照），保留 note/graph；
-- `NoteReader.tsx` 的 `note.refs` 变为可点击列表，点击后落到对应提交的 diff；
+- `NoteReader.tsx` 的 `note.refs` 变为可点击列表，点击后按 §16 的规则打开最新文件或历史提交文件；
 - 样式：`styles/scm.css`。
 
+
+---
+
+## 16. 笔记引用跳转（最新优先，缺失回历史）
+
+**口径（用户确认）**
+
+1. 引用在最新版本仍存在：打开**当前工作区文件**并高亮，行号按最新文件重算；
+2. 引用在最新版本已删除或已改写：切到**笔记写作时的 commit**，打开该版本的整份文件并高亮旧行；
+3. “仍存在”的判定 = **同一文件里能精确匹配原代码片段**（`code_hash` / `snippet`），不是只看文件是否存在。
+
+**后端**
+
+- `note_versions.resolve_refs_worktree(root, refs)`：
+  1. 工作区同文件原范围 `code_hash`/`snippet` 命中 → `unchanged`；
+  2. 同文件全文搜索命中 → `moved`，返回新行号；
+  3. 工作区不命中、但 `commit_sha` 的 blob 在旧范围命中 → `historical`，`resolved_commit = commit_sha`；
+  4. 两边都不命中：文件还在 → `modified`；文件也不在 → `deleted`。
+- `GET /api/notes/{id}` 不带 `rev` 时走上面的工作区解析；带 `rev` 时仍在指定 commit 内解析。
+- 测试：`tests/test_note_scope.py` 覆盖 unchanged / moved / historical / deleted / 两边都不命中。
+
+**前端**
+
+- `AppState.openRefCode` 打开 file 标签（不是 diff），并把 SCM 面板聚焦到对应 commit/file；
+- 目标 revision 由引用状态决定：
+  - `unchanged` / `moved` → 当前 scope（工作区为 `null`，历史视图为当前 `rev`）；
+  - 其余 → `resolved_commit || commit_sha`；
+- `NoteReader` 行内对当前引用显示「最新 / 当前版本」，历史引用显示短 sha；
+- 同一 scope 下重复点击不会关闭其它 file 标签；跨 scope 才重置 file/diff 标签。
