@@ -62,6 +62,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
     clearCitation,
     activeConversationId,
     focusConversation,
+    focusNote,
     refreshKey,
     bumpRefresh,
     openNoteView,
@@ -650,8 +651,30 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         },
       })
     }
+    // A note reference is not a conversation card, but it deserves the same
+    // little label above its frame: the note title, and clicking it returns to
+    // the conversation the note was distilled from. If a real code card already
+    // owns this exact range, keep that one instead of stacking two labels.
+    if (citationHighlight?.path === path && citationHighlight.label) {
+      const start = citationHighlight.start_line
+      const end = citationHighlight.end_line
+      const rangeKey = `${start}-${end}`
+      if (!seen.has(rangeKey)) {
+        seen.add(rangeKey)
+        items.push({
+          key: `citation-${citationHighlight.noteId ?? path}-${rangeKey}`,
+          start,
+          label: citationHighlight.label,
+          active: true,
+          onClick: () => {
+            if (citationHighlight.conversationId) focusConversation(citationHighlight.conversationId)
+            else if (citationHighlight.noteId != null) focusNote(citationHighlight.noteId)
+          },
+        })
+      }
+    }
     return items
-  }, [cards.data, annotations.data, annotations.reload, activeConversationId, focusConversation, expandedAnnotations, projectId, path])
+  }, [cards.data, annotations.data, annotations.reload, activeConversationId, focusConversation, focusNote, expandedAnnotations, projectId, path, citationHighlight])
 
   // Reserve a title strip above every framed range. The zone belongs to the
   // view, not to the model, so it has to be refreshed whenever the cards change

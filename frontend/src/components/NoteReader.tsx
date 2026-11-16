@@ -187,7 +187,11 @@ export function NoteReader(): ReactNode {
     const targetRev = current ? rev : (ref.resolved_commit || ref.commit_sha || rev)
     const start = ref.resolved_start_line ?? ref.start_line
     const end = ref.resolved_end_line ?? ref.end_line
-    openRefCode(targetRev, ref.path, { start, end })
+    openRefCode(targetRev, ref.path, { start, end }, {
+      label: note.title,
+      noteId: note.id,
+      conversationId: note.conversation_id,
+    })
   }
 
   const openCitation = (path: string, start: number, end: number) => {
@@ -200,7 +204,11 @@ export function NoteReader(): ReactNode {
     }
     // A citation with no saved ref (for example an older note) still gets the
     // best-effort work-tree jump.
-    openRefCode(null, path, { start, end })
+    openRefCode(null, path, { start, end }, {
+      label: note.title,
+      noteId: note.id,
+      conversationId: note.conversation_id,
+    })
   }
 
   return (

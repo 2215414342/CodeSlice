@@ -21,6 +21,12 @@ export interface RevealTarget extends Citation {
    * VS Code's go-to-definition.
    */
   source?: 'citation' | 'navigation'
+  /** Note title for the little label above the framed range. */
+  label?: string
+  /** Note that produced this range, so the label can return to it. */
+  noteId?: number | null
+  /** Source conversation of that note, preferred when returning. */
+  conversationId?: string | null
 }
 
 export interface OpenFileState {
@@ -228,6 +234,7 @@ interface AppState {
     rev: string | null,
     path: string,
     highlight?: { start: number; end: number } | null,
+    origin?: { label?: string; noteId?: number | null; conversationId?: string | null },
   ) => void
 }
 
@@ -416,7 +423,12 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
    * repeated clicks.
    */
   const openRefCode = useCallback(
-    (rev: string | null, path: string, highlight?: { start: number; end: number } | null) => {
+    (
+      rev: string | null,
+      path: string,
+      highlight?: { start: number; end: number } | null,
+      origin?: { label?: string; noteId?: number | null; conversationId?: string | null },
+    ) => {
       const range = highlight && highlight.start > 0 ? highlight : null
       const sameScope =
         rev === null
@@ -436,6 +448,9 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
           symbol: null,
           nonce: Date.now(),
           source: 'navigation',
+          label: origin?.label,
+          noteId: origin?.noteId ?? null,
+          conversationId: origin?.conversationId ?? null,
         })
       }
     },
