@@ -12,11 +12,11 @@ CodeSlice 是一款本地优先的 AI 代码阅读桌面应用。添加代码仓
 
 | 平台 | 架构 | 安装包 |
 | --- | --- | --- |
-| Windows 10 / 11 | x64 | `CodeSlice-3.0.0-Setup.exe` |
-| macOS 11+ | Apple Silicon（arm64） | `CodeSlice-3.0.0-arm64.dmg` |
-| macOS 11+ | Intel（x64） | `CodeSlice-3.0.0-x64.dmg` |
-| Linux（Ubuntu 22.04+ / Debian 12+） | x86_64 | `CodeSlice-3.0.0-x86_64.AppImage`、`-amd64.deb`、`-x86_64.rpm` |
-| Linux（Ubuntu 22.04+ / Debian 12+） | arm64 | `CodeSlice-3.0.0-arm64.AppImage`、`-arm64.deb`、`-aarch64.rpm` |
+| Windows 10 / 11 | x64 | `CodeSlice-0.3.0-Setup.exe` |
+| macOS 11+ | Apple Silicon（arm64） | `CodeSlice-0.3.0-arm64.dmg` |
+| macOS 11+ | Intel（x64） | `CodeSlice-0.3.0-x64.dmg` |
+| Linux（Ubuntu 22.04+ / Debian 12+） | x86_64 | `CodeSlice-0.3.0-x86_64.AppImage`、`-amd64.deb`、`-x86_64.rpm` |
+| Linux（Ubuntu 22.04+ / Debian 12+） | arm64 | `CodeSlice-0.3.0-arm64.AppImage`、`-arm64.deb`、`-aarch64.rpm` |
 
 安装包由 GitHub Actions 在对应的原生 runner 上构建：Windows 使用 NSIS，macOS 使用
 DMG，Linux 使用 AppImage / deb / rpm。暂未提供 Windows ARM64 与 Linux ARMv7 安装包。
@@ -122,7 +122,7 @@ references; they do not assert semantic similarity.
 ## 目录
 
 - [实战演示](#实战演示)
-- [v3.0 更新](#v30-更新)
+- [v0.3.0 更新](#v030-更新)
 - [快速开始](#快速开始)
 - [功能一览](#功能一览)
 - [运行要求](#运行要求)
@@ -143,7 +143,7 @@ references; they do not assert semantic similarity.
 
 ---
 
-## v3.0 更新
+## v0.3.0 更新
 
 - **Git 版本视图**：顶部版本选择器会标出工作区当前分支；可以切到任意分支、标签或提交，
   只读查看那一版的代码、文件树、图谱和符号导航，不 checkout、不改动工作区。
@@ -156,7 +156,7 @@ references; they do not assert semantic similarity.
   跟着这次查看移动。需要整页切换版本时，仍从版本选择器或提交时间线显式操作。
 - **历史导航**：在历史版本的代码里，F12、引用列表和 hover 也使用该版本的符号索引，
   不会跳回工作区。
-- **发布**：版本号统一到 3.0.0，标签为 `v3.0`。
+- **发布**：版本号统一到 0.3.0，标签为 `v0.3.0`。
 
 <details>
 <summary>English</summary>
@@ -177,7 +177,7 @@ references; they do not assert semantic similarity.
   happen only through the revision picker or commit timeline.
 - **Historical navigation.** Go-to-definition, references, and hover inside a
   historical file use that revision's symbol index instead of the worktree.
-- **Release:** version bumped to 3.0.0; tag `v3.0`.
+- **Release:** version bumped to 0.3.0; tag `v0.3.0`.
 
 </details>
 
@@ -418,7 +418,7 @@ references; they do not assert semantic similarity.
 ## 快速开始
 
 1. 从 [最新 GitHub Release](https://github.com/ctianye/CodeSlice/releases/latest)
-   下载对应平台的安装包：Windows 使用 `CodeSlice-3.0.0-Setup.exe`；macOS 按芯片选择
+   下载对应平台的安装包：Windows 使用 `CodeSlice-0.3.0-Setup.exe`；macOS 按芯片选择
    arm64（Apple Silicon）或 x64（Intel）的 `.dmg`；Linux 按架构选择 x86_64 或 arm64
    的 AppImage、`.deb`、`.rpm`。
 2. 启动 CodeSlice，点击添加项目并选择本地代码仓库所在的文件夹。
@@ -439,7 +439,7 @@ API Key 保存在系统凭据管理器中。
 
 1. Download the package for your platform from the
    [latest GitHub Release](https://github.com/ctianye/CodeSlice/releases/latest):
-   `CodeSlice-3.0.0-Setup.exe` for Windows; an arm64 (Apple Silicon) or x64
+   `CodeSlice-0.3.0-Setup.exe` for Windows; an arm64 (Apple Silicon) or x64
    (Intel) `.dmg` for macOS; or the x86_64 / arm64 AppImage, `.deb`, or `.rpm`
    for Linux.
 2. Start CodeSlice and add a local repository by selecting its folder.
@@ -665,7 +665,7 @@ please explain the problem, reproduction steps, and expected behavior.
 **启动握手**：后端在真正开始监听之后，向 stdout 打印一行
 
 ```
-CODESLICE_READY {"port": 54746, "token": "xN-Nxo...", "version": "3.0.0"}
+CODESLICE_READY {"port": 54746, "token": "xN-Nxo...", "version": "0.3.0"}
 ```
 
 Electron 主进程读到这一行才知道该连哪个端口、用什么 Token。
@@ -794,7 +794,7 @@ cd desktop; npm run dev
 # 1) 后端 → packaging\dist-backend\codeslice-backend.exe（扁平布局）
 pwsh -File packaging\build_backend.ps1
 
-# 2) 前端 + Electron → desktop\release\CodeSlice-3.0.0-Setup.exe
+# 2) 前端 + Electron → desktop\release\CodeSlice-0.3.0-Setup.exe
 pwsh -File packaging\build_desktop.ps1
 ```
 
@@ -829,7 +829,7 @@ CI）中运行：
 PyInstaller 产物必须在目标架构的 Linux 上生成，不能从 Windows 交叉编译；arm64 包同理，
 需要 arm64 runner 或 arm64 机器。GitHub Actions 已按架构分别构建：推送 `v*` 标签后，
 Windows、macOS x64/arm64、Linux x64/arm64 会并行打包，汇总后自动创建 / 更新 Release
-并上传 `SHA256SUMS-v3.0.txt`。也可以手动触发 `release` workflow；填写
+并上传 `SHA256SUMS-v0.3.0.txt`。也可以手动触发 `release` workflow；填写
 `publish_tag` 可把本次构建发布到已有的 tag（不填则只上传 Actions artifact）。
 
 AppImage / deb / rpm 输出到 `desktop/release-linux/`。只想重新打包前端或复用已有后端时，
@@ -1180,13 +1180,13 @@ PyInstaller 产出的 exe 没有代码签名，属于典型误报。点「更多
 
 **Q：Linux 上怎么安装？**
 
-- AppImage：`chmod +x CodeSlice-3.0.0-x86_64.AppImage` 后直接运行，不需要安装；
-  arm64 机器使用 `CodeSlice-3.0.0-arm64.AppImage`。若提示缺少 FUSE，可
-  `sudo apt install libfuse2`，或运行 `./CodeSlice-3.0.0-x86_64.AppImage --appimage-extract-and-run`。
-- deb：`sudo apt install ./CodeSlice-3.0.0-amd64.deb`（arm64 为
-  `CodeSlice-3.0.0-arm64.deb`）。
-- rpm：`sudo dnf install ./CodeSlice-3.0.0-x86_64.rpm`（arm64 为
-  `CodeSlice-3.0.0-aarch64.rpm`，或 `sudo rpm -i ...`）。
+- AppImage：`chmod +x CodeSlice-0.3.0-x86_64.AppImage` 后直接运行，不需要安装；
+  arm64 机器使用 `CodeSlice-0.3.0-arm64.AppImage`。若提示缺少 FUSE，可
+  `sudo apt install libfuse2`，或运行 `./CodeSlice-0.3.0-x86_64.AppImage --appimage-extract-and-run`。
+- deb：`sudo apt install ./CodeSlice-0.3.0-amd64.deb`（arm64 为
+  `CodeSlice-0.3.0-arm64.deb`）。
+- rpm：`sudo dnf install ./CodeSlice-0.3.0-x86_64.rpm`（arm64 为
+  `CodeSlice-0.3.0-aarch64.rpm`，或 `sudo rpm -i ...`）。
 
 deb / rpm 默认安装到 `/opt/CodeSlice`，启动项会出现在应用菜单中。安装包未做代码签名，
 系统可能提示来源未知；确认文件来自本仓库 Release 后可继续安装。
@@ -1246,7 +1246,7 @@ uv run fastapi dev app/main.py --port 8123
 **Q：安装后 `CodeSlice.exe` 是 Electron 的默认图标？**
 
 说明打包时 rcedit 那一步没生效。正常的打包输出里应该有
-`[ok] icon verified: ...` 与 `[ok] version info: CodeSlice 3.0.0.0`。
+`[ok] icon verified: ...` 与 `[ok] version info: CodeSlice 0.3.0.0`。
 原因是 `desktop/electron-builder.yml` 里 `signAndEditExecutable: false`（本地不签名），
 electron-builder 因此跳过写图标/版本；而打开它的替代路径需要解压含符号链接的
 winCodeSign 包，非管理员做不到。`packaging\build_desktop.ps1` 改为
