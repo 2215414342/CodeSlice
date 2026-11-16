@@ -71,6 +71,18 @@ def test_include_others_puts_the_current_project_first(tmp_path, conn_reset):
     assert [r["title"] for r in repo.list_conversations(mine["id"])] == ["mine-new", "mine-old"]
 
 
+def test_list_conversations_exposes_note_id(tmp_path, conn_reset):
+    project = _make_project(tmp_path, "notes")
+    conversation = repo.create_conversation(project["id"], "card", mode="project")
+    note = repo.create_note(project["id"], "Card note", "body", conversation["id"])
+
+    rows = repo.list_conversations(project["id"])
+
+    assert rows[0]["has_note"] is True
+    assert rows[0]["note_id"] == note["id"]
+    assert rows[0]["note_title"] == "Card note"
+
+
 def test_list_endpoint_accepts_include_others(client, tmp_path, conn_reset):
     mine = _make_project(tmp_path, "mine")
     other = _make_project(tmp_path, "other")

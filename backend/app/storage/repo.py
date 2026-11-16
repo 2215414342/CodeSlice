@@ -165,7 +165,11 @@ def get_conversation(conversation_id: str) -> dict[str, Any] | None:
 _CONVERSATION_SELECT = """
     SELECT c.*,
            p.name AS project_name,
-           EXISTS(SELECT 1 FROM notes n WHERE n.conversation_id = c.id) AS has_note
+           EXISTS(SELECT 1 FROM notes n WHERE n.conversation_id = c.id) AS has_note,
+           (SELECT n.id FROM notes n WHERE n.conversation_id = c.id
+             ORDER BY n.id LIMIT 1) AS note_id,
+           (SELECT n.title FROM notes n WHERE n.conversation_id = c.id
+             ORDER BY n.id LIMIT 1) AS note_title
       FROM conversations c
       LEFT JOIN projects p ON p.id = c.project_id
 """
