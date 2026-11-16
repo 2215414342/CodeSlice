@@ -73,6 +73,10 @@ export const CodeViewer = memo(function CodeViewer({
         // picked set right before the click handler runs, so lines could never
         // accumulate.
         selectOnLineNumbers: false,
+        // Pressing inside an existing selection must extend it, not start a
+        // drag-and-drop of the selected text. Dragging selected text is a common
+        // way to look like selection is "stuck" after the first few lines.
+        dragAndDrop: false,
         // Ctrl/Cmd+Click is "go to definition" here, so it must not also add a
         // cursor. Alt remains the multi-cursor modifier.
         multiCursorModifier: 'alt',

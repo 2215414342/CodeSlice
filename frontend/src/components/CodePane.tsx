@@ -197,6 +197,10 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   })
 
   const updateSelection = useCallback((instance: MonacoEditor.IStandaloneCodeEditor) => {
+    // Any render while the button is down resizes the editor and ends the native
+    // drag. The scheduler already checks this; guarding the commit itself closes
+    // the remaining entry points (mount, pointer handlers, late frames).
+    if (mouseSelectingRef.current) return
     const model = instance.getModel()
     const range = instance.getSelection()
     if (!model || !range || range.isEmpty()) {
@@ -307,6 +311,15 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         if (!mouseSelectingRef.current) scheduleSelection(instance)
       })
       const editorNode = instance.getDomNode()
+      /** Enter the no-render window before any editor-owned input surface. */
+      const beginMouseSelection = (event: MouseEvent | PointerEvent) => {
+        if (event.button !== 0) return
+        mouseSelectingRef.current = true
+        if (selectionFrame.current !== null) {
+          window.cancelAnimationFrame(selectionFrame.current)
+          selectionFrame.current = null
+        }
+      }
       const onMouseDownCapture = (event: MouseEvent) => {
         if (event.button !== 0) return
         const hit = instance.getTargetAtClientPoint(event.clientX, event.clientY)
@@ -327,19 +340,28 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         // native drag; the resulting Monaco option/layout update can terminate
         // the drag after only one or two lines. Keep every editor press inside
         // the no-render window and commit the selection once on mouseup.
-        mouseSelectingRef.current = true
-        if (mouseSelectingRef.current && selectionFrame.current !== null) {
-          window.cancelAnimationFrame(selectionFrame.current)
-          selectionFrame.current = null
-        }
+        beginMouseSelection(event)
+      }
+      const onPointerDownCapture = (event: PointerEvent) => {
+        // Pointer events precede mousedown in Chromium. Entering the guard here
+        // also covers pens, touchpads and any surface that consumes mousedown.
+        beginMouseSelection(event)
       }
       const onMouseUpCapture = () => {
         if (!mouseSelectingRef.current) return
         mouseSelectingRef.current = false
         scheduleSelection(instance)
       }
+      const onPointerCancel = () => {
+        if (!mouseSelectingRef.current) return
+        mouseSelectingRef.current = false
+        scheduleSelection(instance)
+      }
+      editorNode?.addEventListener('pointerdown', onPointerDownCapture, true)
       editorNode?.addEventListener('mousedown', onMouseDownCapture, true)
       window.addEventListener('mouseup', onMouseUpCapture, true)
+      window.addEventListener('pointerup', onMouseUpCapture, true)
+      window.addEventListener('pointercancel', onPointerCancel, true)
       window.addEventListener('blur', onMouseUpCapture)
       // Line numbers are a picker: each click adds a line to the set, clicking it
       // again removes it, and dragging over the numbers sweeps a range. Monaco's
@@ -430,8 +452,11 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         ctrlLeaveListener.dispose()
         window.removeEventListener('keyup', releaseCtrlLink)
         window.removeEventListener('blur', releaseCtrlLink)
+        editorNode?.removeEventListener('pointerdown', onPointerDownCapture, true)
         editorNode?.removeEventListener('mousedown', onMouseDownCapture, true)
         window.removeEventListener('mouseup', onMouseUpCapture, true)
+        window.removeEventListener('pointerup', onMouseUpCapture, true)
+        window.removeEventListener('pointercancel', onPointerCancel, true)
         window.removeEventListener('blur', onMouseUpCapture)
         mouseSelectingRef.current = false
         if (selectionFrame.current !== null) {
@@ -1210,6 +1235,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         />
       ) : null}
 
+      <div className="selection-dock">
       {picked ? (
         <div className="selection-bar">
           <span className="lines">
@@ -1331,7 +1357,13 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
             清除引用
           </button>
         </div>
-      ) : null}
+      ) : (
+        <div className="selection-idle">
+          <Icon name="code" size={11} />
+          拖选代码后可提问、批注或在图谱中定位
+        </div>
+      )}
+      </div>
 
       {annotationDraft ? <div className="annotation-editor">
         <div className="annotation-editor-head">
