@@ -124,14 +124,20 @@ def _first_parent(root: Path, sha: str) -> str | None:
 
 def _commit_changes(root: Path, sha: str) -> dict[str, Any]:
     parent = _first_parent(root, sha)
+    # `diff-tree <merge>` silently produces nothing; name the first parent
+    # explicitly so a merge row shows the changes it introduced on this branch.
+    if parent:
+        base_args = ["diff-tree", "-r", "--no-commit-id", parent, sha]
+    else:
+        base_args = ["diff-tree", "--root", "-r", "--no-commit-id", sha]
     name_raw = git_service._run(
         root,
-        ["diff-tree", "--root", "-r", "--name-status", "-z", "--no-commit-id", sha],
+        [*base_args[:2], "--name-status", "-z", *base_args[2:]],
         check=False,
     )
     num_raw = git_service._run(
         root,
-        ["diff-tree", "--root", "-r", "--numstat", "-z", "--no-commit-id", sha],
+        [*base_args[:2], "--numstat", "-z", *base_args[2:]],
         check=False,
     )
     rows = _parse_name_status(name_raw)

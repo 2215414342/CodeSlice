@@ -268,9 +268,10 @@ def git_commits(
     limit: int = Query(default=30, ge=1, le=100),
     skip: int = Query(default=0, ge=0, le=5000),
     path: str = Query(default=""),
+    topo: bool = Query(default=False),
 ) -> dict[str, Any]:
     root = paths.resolve_root(project["path"])
-    return git_service.log(root, limit=limit, skip=skip, rel_path=path or None)
+    return git_service.log(root, limit=limit, skip=skip, rel_path=path or None, topo=topo)
 
 
 @router.get("/{project_id}/git/tree")

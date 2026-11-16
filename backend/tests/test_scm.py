@@ -63,6 +63,26 @@ def test_root_commit_reports_every_file_as_added(scm_project: dict):
     assert all(item["status"] == "added" for item in result["files"])
 
 
+def test_merge_commit_changes_are_against_first_parent(scm_project: dict):
+    root = Path(scm_project["path"])
+    branch = _git(root, "branch", "--show-current").strip()
+    _git(root, "checkout", "-q", "-b", "feature", "HEAD~1")
+    (root / "merge_only.py").write_text("def from_feature():\n    return 7\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "feature work")
+    _git(root, "checkout", "-q", branch)
+    (root / "main_only.py").write_text("def on_main():\n    return 8\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "main work")
+    _git(root, "merge", "-q", "--no-ff", "feature", "-m", "merge feature")
+
+    result = scm.changes(root, "HEAD")
+    assert result["base"] == _git(root, "rev-parse", "HEAD^1").strip()
+    paths = {item["path"] for item in result["files"]}
+    assert "merge_only.py" in paths
+    assert result["additions"] >= 2
+
+
 def test_worktree_changes_cover_modified_untracked_and_deleted(scm_project: dict):
     root = Path(scm_project["path"])
     (root / "old.py").write_text("def after():\n    return 42\n", encoding="utf-8")

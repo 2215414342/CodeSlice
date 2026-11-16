@@ -177,11 +177,12 @@ export const resolveGitRev = (projectId: number, ref: string, signal?: AbortSign
 
 export const listGitCommits = (
   projectId: number,
-  options: { limit?: number; skip?: number; path?: string } = {},
+  options: { limit?: number; skip?: number; path?: string; topo?: boolean } = {},
   signal?: AbortSignal,
 ): Promise<GitCommitList> => {
   const params = new URLSearchParams({ limit: String(options.limit ?? 20), skip: String(options.skip ?? 0) })
   if (options.path) params.set('path', options.path)
+  if (options.topo) params.set('topo', 'true')
   return request<GitCommitList>(`/api/projects/${projectId}/git/commits?${params.toString()}`, { signal })
 }
 

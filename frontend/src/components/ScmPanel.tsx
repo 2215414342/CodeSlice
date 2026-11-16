@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react'
-import { useEffect, useMemo, useRef } from 'react'
+import type { MouseEvent, ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from '../api'
 import { useAsync } from '../hooks/useAsync'
 import type { GitCommit, ScmFile } from '../types'
@@ -7,6 +7,7 @@ import { formatRelative } from '../lib/format'
 import { useApp } from '../state/AppState'
 import { EmptyState, ErrorNote, Loading } from './Feedback'
 import { Icon } from './Icon'
+import { ScmGraph, layoutCommitGraph } from './ScmGraph'
 
 const STATUS_LETTER: Record<ScmFile['status'], string> = {
   added: 'A',
@@ -17,15 +18,32 @@ const STATUS_LETTER: Record<ScmFile['status'], string> = {
   conflicted: 'U',
 }
 
+const STATUS_LABEL: Record<ScmFile['status'], string> = {
+  added: '新增',
+  modified: '修改',
+  deleted: '删除',
+  renamed: '重命名',
+  copied: '复制',
+  conflicted: '冲突',
+}
+
+const HOVER_CARD_WIDTH = 296
+
+type HoverInput = { kind: 'commit'; commit: GitCommit } | { kind: 'file'; file: ScmFile }
+type HoverTarget = HoverInput & { x: number; y: number }
+
+interface CommitStats {
+  files: number
+  additions: number
+  deletions: number
+}
+
 /**
  * Source-control sidebar: a read-only mirror of VS Code's SCM view.
  *
- * Top half is "changes": the selected commit against its first parent, or the
- * work tree against HEAD. Bottom half is the commit timeline; clicking a row
- * moves the app's revision scope, so code, graph and notes follow together.
- *
- * There is deliberately no commit/stage/discard control here — the version
- * feature is read-only, and a button that looks like it writes would be a lie.
+ * The history rows deliberately carry only the graph and the commit subject.
+ * Author, hash, date and diff size live in a hover card, the same split VS
+ * Code uses (`setLabel(subject, author)` plus `setupDelayedHover`).
  */
 export function ScmPanel(): ReactNode {
   const { project, revision, setRevision, openDiff, scmFocus, refreshKey } = useApp()
@@ -38,10 +56,37 @@ export function ScmPanel(): ReactNode {
     { enabled: projectId !== null },
   )
   const commits = useAsync(
-    (signal) => (projectId ? api.listGitCommits(projectId, { limit: 40 }, signal) : Promise.resolve(null)),
+    (signal) => (projectId ? api.listGitCommits(projectId, { limit: 50, topo: true }, signal) : Promise.resolve(null)),
     [projectId, refreshKey],
     { enabled: projectId !== null },
   )
+
+  const [hover, setHover] = useState<HoverTarget | null>(null)
+  const [commitStats, setCommitStats] = useState<Record<string, CommitStats>>({})
+  const pendingStats = useRef(new Set<string>())
+  const hoverCooldown = useRef(0)
+
+  const hoveredSha = hover?.kind === 'commit' ? hover.commit.sha : null
+  useEffect(() => {
+    if (!projectId || !hoveredSha) return
+    if (commitStats[hoveredSha] || pendingStats.current.has(hoveredSha)) return
+    pendingStats.current.add(hoveredSha)
+    api
+      .getScmChanges(projectId, hoveredSha)
+      .then((data) => {
+        setCommitStats((current) => ({
+          ...current,
+          [hoveredSha]: {
+            files: data.files.length,
+            additions: data.additions,
+            deletions: data.deletions,
+          },
+        }))
+      })
+      .catch(() => {
+        pendingStats.current.delete(hoveredSha)
+      })
+  }, [commitStats, hoveredSha, projectId])
 
   const listRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -59,8 +104,21 @@ export function ScmPanel(): ReactNode {
     [changes.data],
   )
 
+  const graph = useMemo(() => layoutCommitGraph(commits.data?.commits ?? []), [commits.data])
+  const graphWidth = Math.max(24, (Math.min(6, Math.max(1, graph.laneCount)) + 1) * 11 + 4)
+
   if (projectId === null) {
     return <EmptyState icon="git-branch" title="还没有打开项目" hint="先打开一个本地 Git 仓库，再看它的更改。" />
+  }
+
+  const showHover = (event: MouseEvent<HTMLElement>, target: HoverInput) => {
+    if (changes.loading || Date.now() < hoverCooldown.current) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const preferred = rect.right + 8
+    const rightmost = Math.max(8, window.innerWidth - HOVER_CARD_WIDTH - 8)
+    const x = preferred + HOVER_CARD_WIDTH <= window.innerWidth - 8 ? preferred : rightmost
+    const y = Math.min(Math.max(8, rect.top - 4), Math.max(8, window.innerHeight - 232))
+    setHover({ ...target, x, y })
   }
 
   return (
@@ -85,7 +143,7 @@ export function ScmPanel(): ReactNode {
         </button>
       </div>
 
-      <div className="scm-scroll">
+      <div className="scm-scroll" onScroll={() => setHover(null)}>
         <div className="scm-summary">
           {rev ? (
             <>
@@ -126,28 +184,21 @@ export function ScmPanel(): ReactNode {
               ) : null}
               {rows.map((file) => {
                 const focused = scmFocus?.path === file.path && (scmFocus.rev ?? null) === rev
+                const name = fileBaseName(file.path)
+                const dir = fileDirName(file.path)
                 return (
                   <button
                     key={`${file.status}:${file.path}`}
                     type="button"
                     data-scm-path={file.path}
                     className={`scm-file${focused ? ' focused' : ''}`}
-                    title={`${file.path}${file.old_path ? ` ← ${file.old_path}` : ''}`}
                     onClick={() => openDiff(file.path, rev ?? undefined)}
+                    onMouseEnter={(event) => showHover(event, { kind: 'file', file })}
+                    onMouseLeave={() => setHover(null)}
                   >
                     <span className={`scm-status ${file.status}`}>{STATUS_LETTER[file.status]}</span>
-                    <span className="scm-path">
-                      {file.old_path ? <span className="scm-old-path">{file.old_path} → </span> : null}
-                      {file.path}
-                    </span>
-                    {file.binary ? (
-                      <span className="muted">bin</span>
-                    ) : (
-                      <span className="scm-num">
-                        {file.additions ? <span className="scm-add">+{file.additions}</span> : null}
-                        {file.deletions ? <span className="scm-del">−{file.deletions}</span> : null}
-                      </span>
-                    )}
+                    <span className="scm-file-name">{name}</span>
+                    {dir ? <span className="scm-file-dir">{dir}</span> : null}
                   </button>
                 )
               })}
@@ -172,14 +223,25 @@ export function ScmPanel(): ReactNode {
 
         {commits.loading ? <Loading text="读取提交…" /> : null}
         {commits.error ? <ErrorNote message={commits.error} /> : null}
-        <div className="scm-timeline">
-          {(commits.data?.commits ?? []).map((commit) => (
+        <div className="scm-timeline" onMouseLeave={() => setHover(null)}>
+          {graph.rows.map((row, index) => (
             <CommitRow
-              key={commit.sha}
-              commit={commit}
-              active={commit.sha === rev}
+              key={row.commit.sha}
+              row={row}
+              width={graphWidth}
+              head={index === 0}
+              active={row.commit.sha === rev}
+              onHover={(event) => showHover(event, { kind: 'commit', commit: row.commit })}
+              onLeave={() => setHover(null)}
               onClick={() => {
-                setRevision({ kind: 'rev', sha: commit.sha, shaShort: commit.sha_short, name: commit.subject })
+                hoverCooldown.current = Date.now() + 2000
+                setHover(null)
+                setRevision({
+                  kind: 'rev',
+                  sha: row.commit.sha,
+                  shaShort: row.commit.sha_short,
+                  name: row.commit.subject,
+                })
               }}
             />
           ))}
@@ -188,32 +250,139 @@ export function ScmPanel(): ReactNode {
           ) : null}
         </div>
       </div>
+
+      {hover ? (
+        <div
+          className="scm-hover-card"
+          style={{ left: hover.x, top: hover.y, width: HOVER_CARD_WIDTH }}
+          role="tooltip"
+          aria-live="polite"
+        >
+          {hover.kind === 'commit' ? (
+            <CommitHover commit={hover.commit} stats={commitStats[hover.commit.sha]} />
+          ) : (
+            <FileHover file={hover.file} />
+          )}
+        </div>
+      ) : null}
     </div>
   )
 }
 
 function CommitRow({
-  commit,
+  row,
+  width,
+  head,
   active,
+  onHover,
+  onLeave,
   onClick,
 }: {
-  commit: GitCommit
+  row: ReturnType<typeof layoutCommitGraph>['rows'][number]
+  width: number
+  head: boolean
   active: boolean
+  onHover: (event: MouseEvent<HTMLElement>) => void
+  onLeave: () => void
   onClick: () => void
 }): ReactNode {
-  const parents = commit.parents.length > 1
+  const { commit } = row
   return (
-    <button type="button" className={`scm-commit${active ? ' active' : ''}`} onClick={onClick} title={commit.subject}>
-      <span className="scm-node" aria-hidden="true" />
-      <span className="scm-commit-main">
-        <span className="scm-subject">{commit.subject}</span>
-        <span className="scm-meta">
-          <span className="scm-sha">{commit.sha_short}</span>
-          <span>{commit.author}</span>
-          <span>{formatRelative(commit.author_time)}</span>
-          {parents ? <span className="badge mute">merge</span> : null}
-        </span>
-      </span>
+    <button
+      type="button"
+      className={`scm-commit${active ? ' active' : ''}`}
+      onClick={onClick}
+      onMouseEnter={onHover}
+      onMouseLeave={onLeave}
+      aria-label={`${commit.subject}，${commit.author}，${formatRelative(commit.author_time)}`}
+    >
+      <ScmGraph row={row} width={width} head={head} selected={active} />
+      <span className="scm-subject">{commit.subject}</span>
     </button>
   )
+}
+
+function CommitHover({ commit, stats }: { commit: GitCommit; stats?: CommitStats }): ReactNode {
+  return (
+    <>
+      <div className="scm-hover-title">{commit.subject}</div>
+      <div className="scm-hover-meta">
+        <span>{commit.author}</span>
+        <span className="scm-hover-dot">·</span>
+        <span>{formatRelative(commit.author_time)}</span>
+      </div>
+      <div className="scm-hover-time">{formatAbsoluteTime(commit.author_time)}</div>
+      <div className="scm-hover-sha">{commit.sha}</div>
+      {commit.parents.length > 1 ? (
+        <div className="scm-hover-note">合并提交 · {commit.parents.length} 个父提交</div>
+      ) : null}
+      <div className="scm-hover-stats">
+        {stats ? (
+          <>
+            <span>{stats.files} 个文件</span>
+            <span className="scm-add">+{stats.additions}</span>
+            <span className="scm-del">−{stats.deletions}</span>
+          </>
+        ) : (
+          <span className="muted">读取改动…</span>
+        )}
+      </div>
+      <div className="scm-hover-hint">点击切换代码、图谱与笔记到此提交</div>
+    </>
+  )
+}
+
+function FileHover({ file }: { file: ScmFile }): ReactNode {
+  const name = fileBaseName(file.path)
+  return (
+    <>
+      <div className="scm-hover-title">{name}</div>
+      <div className="scm-hover-path">
+        {file.old_path ? (
+          <>
+            <span className="scm-old-path">{file.old_path}</span>
+            <Icon name="arrow-right" size={10} />
+            <span>{file.path}</span>
+          </>
+        ) : (
+          file.path
+        )}
+      </div>
+      <div className="scm-hover-stats">
+        <span>{STATUS_LABEL[file.status]}</span>
+        {file.binary ? (
+          <span className="muted">二进制文件</span>
+        ) : (
+          <>
+            <span className="scm-add">+{file.additions}</span>
+            <span className="scm-del">−{file.deletions}</span>
+          </>
+        )}
+      </div>
+      <div className="scm-hover-hint">点击打开并排差异</div>
+    </>
+  )
+}
+
+function fileBaseName(path: string): string {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return slash >= 0 ? path.slice(slash + 1) : path
+}
+
+function fileDirName(path: string): string {
+  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return slash > 0 ? path.slice(0, slash) : ''
+}
+
+function formatAbsoluteTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
 }

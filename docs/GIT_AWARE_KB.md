@@ -453,7 +453,7 @@ P2 才把图谱接上（成本最高，且依赖 P1 的取数层）；P3 是三�
 - 不在浏览动作里 checkout / stash / reset；
 - 不把历史版本灌进 FTS/向量索引；
 - 不为每个版本复制一份笔记；
-- 不做跨版本图谱 diff、分支泳道图；
+- 不做跨版本图谱 diff；提交时间线只画只读泳道图，不提供分支切换/合并操作；
 - 不在 SQLite 里复制 git 历史；
 - 不自动刷新正在查看的版本（分支前进只提示）。
 
@@ -503,14 +503,20 @@ P2 才把图谱接上（成本最高，且依赖 P1 的取数层）；P3 是三�
 
 - `app/services/scm.py`
   - `changes(root, rev=None)`：porcelain/`diff-tree` 解析 A/M/D/R/C/U、`+/−` 行数、二进制标记、2 MB 截断；
+  - 合并提交显式 diff 第一父提交：`diff-tree <first-parent> <sha>`，否则 Git 对 merge 默认不出文件；
   - `file_pair(root, rev, path)`：返回两端的文本（不是 patch），供 Monaco `DiffEditor` 使用。
 - `GET /api/projects/{id}/git/changes?rev=`（缺省为工作区）
 - `GET /api/projects/{id}/git/pair?path=&rev=`（缺省为 `HEAD ↔ 工作区`）
-- 测试：`tests/test_scm.py`（提交 vs 父提交、root commit、工作区 M/A/D、两端内容、未知 rev 404、API 形状）。
+- `GET /api/projects/{id}/git/commits?topo=true`：时间线用拓扑序，父提交总在子提交之后，泳道图不会断线。
+- 测试：`tests/test_scm.py`（提交 vs 父提交、root commit、合并提交 vs 第一父提交、工作区 M/A/D、两端内容、未知 rev 404、API 形状）。
 
 **前端**
 
 - `Sidebar.tsx` 第四个 tab `源代码`；`ScmPanel.tsx` 渲染更改与时间线；
+- `ScmGraph.tsx` 按 VS Code `scmHistory.ts` 的几何重画提交泳道：22px 行高、11px 泳道、
+  5px 曲线半径、4px 圆点；输入/输出泳道逐行推进，合并提交的第二父提交向右下弯出；
+- 时间线行内只保留「泳道 + subject」；作者、绝对/相对时间、sha、改动文件数与 `+/−`
+  放到 hover 卡片，减少每行信息密度；
 - `DiffPane.tsx` 用 `@monaco-editor/react` 的 `DiffEditor` 做双栏只读 diff，标题为
   `文件 (旧sha) ↔ 文件 (新sha)`；
 - `AppState.tsx` 增加 diff 标签、`ScmFocus`、`openDiff` / `focusScm` / `openRefDiff`；

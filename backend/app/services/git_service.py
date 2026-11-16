@@ -515,6 +515,7 @@ def log(
     rev: str = "HEAD",
     max_commits: int = 100,
     max_skip: int = 5_000,
+    topo: bool = False,
 ) -> dict[str, Any]:
     """Commits touched by ``rel_path`` (or the whole history).
 
@@ -542,6 +543,8 @@ def log(
         _END_OF_OPTIONS,
         sha,
     ]
+    if topo:
+        args.insert(1, "--topo-order")
     if rel:
         args += ["--", rel]
     try:
