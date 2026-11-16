@@ -553,4 +553,5 @@ P2 才把图谱接上（成本最高，且依赖 P1 的取数层）；P3 是三�
   - `unchanged` / `moved` → 当前 scope（工作区为 `null`，历史视图为当前 `rev`）；
   - 其余 → `resolved_commit || commit_sha`；
 - `NoteReader` 行内对当前引用显示「最新 / 当前版本」，历史引用显示短 sha；
+- 跳转后编辑器用代码卡片同款 `frameDecorations` 画出整段范围框；
 - 同一 scope 下重复点击不会关闭其它 file 标签；跨 scope 才重置 file/diff 标签。

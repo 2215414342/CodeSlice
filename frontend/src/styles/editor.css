@@ -537,11 +537,17 @@
 
 /* --------------------------- citation decorations ------------------------- */
 
+.citation-frame {
+  /* Same edge language as a code card: the range reads as one box, not as a
+     text selection. `frameDecorations` adds `range-frame-top` / `-bottom` to the
+     first and last line, so those rules supply the horizontal edges. */
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
 .citation-highlight {
-  /* A citation lands on a range the model quoted, which can be a whole file.
-     Keep it a thin left rail instead of a tint so a wide range does not read as
-     "the file is selected", and so it is clearly different from a conversation
-     frame (which is the blue box). */
+  /* Legacy fallback for any stale decoration data cached in a running client. */
   background: color-mix(in srgb, var(--accent) 6%, transparent);
   border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
 }

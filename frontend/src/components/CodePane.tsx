@@ -535,12 +535,9 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
     const maxLine = model.getLineCount()
     const from = Math.max(1, Math.min(citationHighlight.start_line, maxLine))
     const to = Math.max(from, Math.min(citationHighlight.end_line, maxLine))
-    collection.set([
-      {
-        range: { startLineNumber: from, startColumn: 1, endLineNumber: to, endColumn: model.getLineMaxColumn(to) },
-        options: { isWholeLine: true, className: 'citation-highlight', inlineClassName: 'citation-line-flash' },
-      },
-    ])
+    // Reuse the same per-line frame builder as code cards so this reads as one
+    // continuous box (with top/bottom edges) rather than a thin left rail.
+    collection.set(frameDecorations(model, [{ start: from, end: to }], 'citation-frame'))
     instance.revealLineInCenter(from)
     // `ready` is in the deps because clicking a citation from a note view mounts
     // this pane from scratch: the target is already set by the time Monaco hands
