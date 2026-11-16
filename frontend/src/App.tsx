@@ -5,6 +5,7 @@ import { usePersistedState } from './hooks/useAsync'
 import { ChatPane } from './components/ChatPane'
 import { CodePane } from './components/CodePane'
 import type { SnippetSelection } from './components/CodePane'
+import { DiffPane } from './components/DiffPane'
 import { EditorTabs } from './components/EditorTabs'
 import { NoteReader } from './components/NoteReader'
 import { GraphView } from './components/graph/GraphView'
@@ -40,6 +41,7 @@ export function App(): ReactNode {
     activeTabIndex,
   } = useApp()
   const graphTabActive = tabs[activeTabIndex]?.kind === 'graph'
+  const activeTab = tabs[activeTabIndex]
   const [showWelcome, setShowWelcome] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [newRelease, setNewRelease] = useState<AppRelease | null>(null)
@@ -151,7 +153,9 @@ export function App(): ReactNode {
             {/* Three-way: a graph is a whole-project view, notes are read in
                 place, everything else is the code editor. The two graphs are
                 distinct tabs because their edges mean different things. */}
-            {graphTabActive && activeGraphScope === 'code' ? (
+            {activeTab?.kind === 'diff' ? (
+              <DiffPane key={`${activeTab.rev ?? 'worktree'}:${activeTab.path}`} tab={activeTab} />
+            ) : graphTabActive && activeGraphScope === 'code' ? (
               <GraphView key={`${project.id}:code`} initialNodeId={graphFocusNodeId}
                 focusNonce={tabs[activeTabIndex]?.kind === 'graph' ? (tabs[activeTabIndex] as { focusNonce?: number }).focusNonce : 0} />
             ) : graphTabActive && activeGraphScope === 'notes' ? (

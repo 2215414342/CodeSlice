@@ -13,6 +13,8 @@ import { getHover } from '../../api'
 interface NavigationContext {
   projectId: number | null
   path: string | null
+  /** The commit being read, or null for the work tree. */
+  rev?: string | null
 }
 
 let context: NavigationContext = { projectId: null, path: null }
@@ -23,7 +25,7 @@ const HOVER_CACHE_LIMIT = 300
 
 export function setNavigationContext(next: NavigationContext | null): void {
   // Hover answers are position-based; a different file invalidates all of them.
-  if ((next?.path ?? null) !== context.path) hoverCache.clear()
+  if ((next?.path ?? null) !== context.path || (next?.rev ?? null) !== (context.rev ?? null)) hoverCache.clear()
   context = next ?? { projectId: null, path: null }
 }
 
@@ -78,7 +80,7 @@ export function registerCodeNavigation(monaco: Monaco): void {
 
   monaco.languages.registerHoverProvider(NAVIGATION_LANGUAGES, {
     provideHover: async (model, position) => {
-      const { projectId, path } = context
+      const { projectId, path, rev } = context
       if (projectId === null || !path) return null
       // The editor only ever shows the active tab, but a stale request can
       // outlive a tab switch; never answer for a different file. `uri.path` is
@@ -92,18 +94,18 @@ export function registerCodeNavigation(monaco: Monaco): void {
       }
       if (modelPath && modelPath !== path && !modelPath.endsWith(`/${path}`)) return null
 
-      const key = `${projectId}:${path}:${position.lineNumber}:${position.column}`
+      const key = `${projectId}:${rev ?? 'worktree'}:${path}:${position.lineNumber}:${position.column}`
       let result = hoverCache.get(key)
       if (result === undefined) {
         try {
-          result = await getHover(projectId, path, position.lineNumber, position.column)
+          result = await getHover(projectId, path, position.lineNumber, position.column, undefined, rev ?? undefined)
         } catch {
           result = null
         }
         rememberHover(key, result)
       }
       if (!result?.contents) return null
-      if (context.projectId !== projectId || context.path !== path) return null
+      if (context.projectId !== projectId || context.path !== path || (context.rev ?? null) !== (rev ?? null)) return null
       // Monaco applies its `hoverHighlight` decoration to the returned range.
       // That must be the *word under the cursor* (VS Code behaviour), not the
       // definition range from the backend — the definition usually lives in a

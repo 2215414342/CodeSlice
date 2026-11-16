@@ -112,6 +112,12 @@ CREATE TABLE IF NOT EXISTS code_anchors (
     snippet         TEXT,
     code_hash       TEXT,
     status          TEXT NOT NULL DEFAULT 'unchanged',
+    -- 1 when the work tree differed from HEAD at capture time: the user saw
+    -- content no commit contains, so "the HEAD version" is not what they read.
+    worktree_dirty  INTEGER NOT NULL DEFAULT 0,
+    -- Which commit actually matched when the work tree no longer does.
+    resolved_commit TEXT,
+    resolved_status TEXT,
     checked_at      TEXT,
     created_at      TEXT NOT NULL
 );
@@ -132,9 +138,34 @@ CREATE TABLE IF NOT EXISTS notes (
     title           TEXT NOT NULL,
     file_name       TEXT,
     content_md      TEXT NOT NULL DEFAULT '',
+    -- The revision the note was generated from; NULL for notes written before
+    -- version tracking existed (they are shown as "未记录版本").
+    base_commit     TEXT,
+    base_dirty      INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
+
+-- One row per code reference a note carries, so the knowledge base can answer
+-- "where does this note point *now*, and does that revision still exist?"
+-- without re-parsing the rendered Markdown.
+CREATE TABLE IF NOT EXISTS note_refs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id         INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    project_id      INTEGER NOT NULL,
+    path            TEXT    NOT NULL,
+    start_line      INTEGER NOT NULL,
+    end_line        INTEGER NOT NULL,
+    symbol          TEXT,
+    commit_sha      TEXT,
+    snippet         TEXT,
+    code_hash       TEXT,
+    status          TEXT    NOT NULL DEFAULT 'unchanged',
+    resolved_commit TEXT,
+    checked_at      TEXT,
+    created_at      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_note_refs_note ON note_refs(note_id);
 
 CREATE TABLE IF NOT EXISTS code_annotations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,6 +286,49 @@ CREATE INDEX IF NOT EXISTS idx_symbol_refs_pos ON symbol_refs(project_id, path, 
 CREATE INDEX IF NOT EXISTS idx_symbol_refs_target ON symbol_refs(project_id, target_node_id);
 CREATE INDEX IF NOT EXISTS idx_symbol_refs_name ON symbol_refs(project_id, normalized);
 
+-- Symbol index for one commit. A revision is immutable, so rows are never
+-- invalidated — they are evicted only when the per-project revision cache
+-- exceeds its bound. Same columns as symbol_defs/symbol_refs plus ``rev``.
+CREATE TABLE IF NOT EXISTS revision_symbol_defs (
+    project_id     INTEGER NOT NULL,
+    rev            TEXT    NOT NULL,
+    node_id        TEXT    NOT NULL,
+    name           TEXT    NOT NULL,
+    normalized     TEXT    NOT NULL,
+    kind           TEXT    NOT NULL,
+    path           TEXT    NOT NULL,
+    start_line     INTEGER NOT NULL,
+    start_col      INTEGER NOT NULL DEFAULT 1,
+    end_line       INTEGER NOT NULL,
+    end_col        INTEGER NOT NULL DEFAULT 1,
+    parent_node_id TEXT,
+    signature      TEXT    NOT NULL DEFAULT '',
+    doc            TEXT    NOT NULL DEFAULT '',
+    language       TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (project_id, rev, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_revision_defs_pos ON revision_symbol_defs(project_id, rev, path, start_line);
+CREATE INDEX IF NOT EXISTS idx_revision_defs_name ON revision_symbol_defs(project_id, rev, normalized);
+
+CREATE TABLE IF NOT EXISTS revision_symbol_refs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id     INTEGER NOT NULL,
+    rev            TEXT    NOT NULL,
+    path           TEXT    NOT NULL,
+    start_line     INTEGER NOT NULL,
+    start_col      INTEGER,
+    end_line       INTEGER,
+    end_col        INTEGER,
+    name           TEXT    NOT NULL,
+    normalized     TEXT    NOT NULL,
+    kind           TEXT    NOT NULL,
+    from_node_id   TEXT,
+    target_node_id TEXT,
+    confidence     TEXT    NOT NULL DEFAULT 'EXTRACTED'
+);
+CREATE INDEX IF NOT EXISTS idx_revision_refs_pos ON revision_symbol_refs(project_id, rev, path, start_line, start_col);
+CREATE INDEX IF NOT EXISTS idx_revision_refs_target ON revision_symbol_refs(project_id, rev, target_node_id);
+
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
@@ -289,6 +363,12 @@ def drop_graph_cache(conn: sqlite3.Connection, project_id: int, scope: str) -> N
     conn.execute("DELETE FROM symbol_defs WHERE project_id = ?", (project_id,))
     conn.execute("DELETE FROM symbol_refs WHERE project_id = ?", (project_id,))
     conn.execute("DELETE FROM settings WHERE key = ?", (f"symbol_index:{project_id}",))
+    if project_id != NOTES_GRAPH_PROJECT_ID:
+        # Revisions are a cache of git objects; deleting a project must not leave
+        # rows that look like a project that no longer exists.
+        conn.execute("DELETE FROM graphs WHERE project_id = ? AND scope LIKE 'code@%'", (project_id,))
+        conn.execute("DELETE FROM revision_symbol_defs WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM revision_symbol_refs WHERE project_id = ?", (project_id,))
     bump_graph_epoch(conn, project_id)
 
 
@@ -388,6 +468,12 @@ def init_db(db_path: Path | None = None) -> None:
             )
         if "file_name" not in note_cols:
             conn.execute("ALTER TABLE notes ADD COLUMN file_name TEXT")
+        # Version tracking for the knowledge base. Old rows stay usable: a NULL
+        # base_commit reads as "written before we recorded revisions".
+        if "base_commit" not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN base_commit TEXT")
+        if "base_dirty" not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN base_dirty INTEGER NOT NULL DEFAULT 0")
         conn.execute("UPDATE notes SET file_name = title WHERE file_name IS NULL OR file_name = ''")
         # The index used to live next to the CREATE TABLE, which fails on an
         # existing database: the column only appears in the ALTER above. Creating
@@ -403,6 +489,16 @@ def init_db(db_path: Path | None = None) -> None:
             "SET title = trim(substr(body, 1, instr(body || char(10), char(10)) - 1)) "
             "WHERE trim(COALESCE(title, '')) = ''"
         )
+        # Anchors gained the commit they were captured from (the column existed
+        # but was never written) plus the revision that actually matched later.
+        anchor_cols = {r["name"] for r in conn.execute("PRAGMA table_info(code_anchors)")}
+        for name, ddl in (
+            ("worktree_dirty", "ALTER TABLE code_anchors ADD COLUMN worktree_dirty INTEGER NOT NULL DEFAULT 0"),
+            ("resolved_commit", "ALTER TABLE code_anchors ADD COLUMN resolved_commit TEXT"),
+            ("resolved_status", "ALTER TABLE code_anchors ADD COLUMN resolved_status TEXT"),
+        ):
+            if name not in anchor_cols:
+                conn.execute(ddl)
     _migrate_fts(path)
 
 

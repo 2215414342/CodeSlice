@@ -16,7 +16,7 @@ from fastapi import APIRouter, Query
 
 from app.api.deps import ProjectDep, TokenDep
 from app.core.config import settings
-from app.graph import symbols
+from app.graph import revision_store, revision_symbols, symbols
 from app.services import paths
 
 router = APIRouter(tags=["navigation"])
@@ -36,6 +36,29 @@ def _canonical(root: Path, path: str) -> tuple[str | None, Path]:
     return target.relative_to(root).as_posix(), target
 
 
+def _git_rel(root: Path, path: str) -> str | None:
+    """A repository-relative path for a revision, without touching the file system."""
+    rel = path.replace("\\", "/").lstrip("/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    parts = rel.split("/")
+    if not rel or any(part in ("", "..") for part in parts):
+        return None
+    return rel
+
+
+def _word_in_text(text: str, line: int, column: int) -> str | None:
+    lines = text.splitlines()
+    if line < 1 or line > len(lines):
+        return None
+    text_line = lines[line - 1]
+    offset = max(0, column - 1)
+    for match in _IDENTIFIER.finditer(text_line):
+        if match.start() <= offset <= match.end():
+            return match.group()
+    return None
+
+
 def _word_at(target: Path, line: int, column: int) -> str | None:
     """The identifier under a 1-based editor cursor.
 
@@ -47,16 +70,7 @@ def _word_at(target: Path, line: int, column: int) -> str | None:
         raw = target.open("rb").read(settings.max_file_bytes)
     except OSError:
         return None
-    text = raw.decode("utf-8", errors="replace")
-    lines = text.splitlines()
-    if line < 1 or line > len(lines):
-        return None
-    text_line = lines[line - 1]
-    offset = max(0, column - 1)
-    for match in _IDENTIFIER.finditer(text_line):
-        if match.start() <= offset <= match.end():
-            return match.group()
-    return None
+    return _word_in_text(raw.decode("utf-8", errors="replace"), line, column)
 
 
 def _payload(row: dict[str, Any], confidence: str) -> dict[str, Any]:
@@ -111,12 +125,32 @@ def _prefer(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(items, key=_rank)
 
 
+class _SymbolsAtRevision:
+    """Binds ``rev`` once so the shared resolver can call either index alike."""
+
+    def __init__(self, rev: str) -> None:
+        self.rev = rev
+
+    def refs_at(self, project_id: int, path: str, line: int, *, word: str | None = None, column: int | None = None):
+        return revision_symbols.refs_at(project_id, self.rev, path, line, word=word, column=column)
+
+    def definition_by_node(self, project_id: int, node_id: str):
+        return revision_symbols.definition_by_node(project_id, self.rev, node_id)
+
+    def definitions_at(self, project_id: int, path: str, line: int):
+        return revision_symbols.definitions_at(project_id, self.rev, path, line)
+
+    def definitions_by_name(self, project_id: int, name: str):
+        return revision_symbols.definitions_by_name(project_id, self.rev, name)
+
+
 def _resolve(
     project_id: int,
     root: Path,
     path: str,
     line: int,
     column: int,
+    rev: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
     """Resolve one cursor position to targets or candidates.
 
@@ -124,25 +158,42 @@ def _resolve(
     navigated to immediately; several targets/candidates go to the picker; an
     empty result carries a reason the editor can show in plain language.
     """
-    rel, target_file = _canonical(root, path)
-    if rel is None:
-        return [], [], "file_not_found", None
+    sym: Any = _SymbolsAtRevision(rev) if rev else symbols
+    if rev:
+        # The path must exist *in that commit*; asking the work tree would answer
+        # for a different revision.
+        rel = _git_rel(root, path)
+        if rel is None:
+            return [], [], "file_not_found", None
+        source = revision_store.source_content(root, rev, rel)
+        target_file: Path | None = None
+        if source is None:
+            return [], [], "file_not_found", None
+    else:
+        rel, target_file = _canonical(root, path)
+        if rel is None:
+            return [], [], "file_not_found", None
 
-    refs = symbols.refs_at(project_id, rel, line, column=column)
+    def word_under_cursor() -> str | None:
+        if rev:
+            return _word_in_text(source or "", line, column)
+        return _word_at(target_file, line, column) if target_file is not None else None
+
+    refs = sym.refs_at(project_id, rel, line, column=column)
     word: str | None = None
     if len(refs) != 1:
-        word = _word_at(target_file, line, column)
+        word = word_under_cursor()
         if word:
-            narrowed = symbols.refs_at(project_id, rel, line, word=word, column=column)
+            narrowed = sym.refs_at(project_id, rel, line, word=word, column=column)
             if narrowed:
                 refs = narrowed
     if not refs:
         if word is None:
-            word = _word_at(target_file, line, column)
+            word = word_under_cursor()
         if word:
             # The caret may sit just outside the recorded span (end of a word);
             # an exact name match on the same line is still unambiguous evidence.
-            refs = symbols.refs_at(project_id, rel, line, word=word)
+            refs = sym.refs_at(project_id, rel, line, word=word)
 
     if refs:
         best = refs[0]
@@ -168,7 +219,7 @@ def _resolve(
             if str(target_id).startswith("<external>"):
                 external = True
                 continue
-            row = symbols.definition_by_node(project_id, str(target_id))
+            row = sym.definition_by_node(project_id, str(target_id))
             if row is not None:
                 targets.append(_payload(row, str(item.get("confidence") or "EXTRACTED")))
         targets = _prefer(targets)
@@ -179,7 +230,7 @@ def _resolve(
         # the project's own ``path`` function).
         if external and not unresolved:
             return [], [], "external", word
-        candidates = symbols.definitions_by_name(project_id, best["name"])
+        candidates = sym.definitions_by_name(project_id, best["name"])
         if candidates:
             return (
                 [],
@@ -191,14 +242,14 @@ def _resolve(
 
     # The cursor may be on a definition itself. F12 there is a no-op jump, which
     # is still the friendly answer: it confirms where the symbol lives.
-    definitions = [_payload(row, "EXACT") for row in symbols.definitions_at(project_id, rel, line)]
+    definitions = [_payload(row, "EXACT") for row in sym.definitions_at(project_id, rel, line)]
     if definitions:
         return _prefer(definitions)[:MAX_CANDIDATES], [], None, word
 
     if word is None:
-        word = _word_at(target_file, line, column)
+        word = word_under_cursor()
     if word:
-        candidates = symbols.definitions_by_name(project_id, word)
+        candidates = sym.definitions_by_name(project_id, word)
         if len(candidates) == 1:
             return [_payload(candidates[0], "INFERRED")], [], None, word
         if candidates:
@@ -211,10 +262,14 @@ def _resolve(
     return [], [], "no_definition", word
 
 
-def _ensure(project: dict) -> Path:
+def _ensure(project: dict, rev: str | None = None) -> tuple[Path, str | None]:
+    """Resolve the root and, in revision scope, materialise that commit's index."""
     root = paths.resolve_root(project["path"])
-    symbols.ensure_index(project["id"], root)
-    return root
+    if not rev:
+        symbols.ensure_index(project["id"], root)
+        return root, None
+    payload, _ = revision_store.get_or_build(project["id"], root, rev)
+    return root, str(payload.get("rev") or rev)
 
 
 @router.get("/projects/{project_id}/definition")
@@ -224,10 +279,11 @@ def get_definition(
     path: str = Query(min_length=1),
     line: int = Query(ge=1),
     column: int = Query(ge=1),
+    rev: str = Query(default=""),
 ) -> dict[str, Any]:
     """The definition an editor cursor points at, plus same-name candidates."""
-    root = _ensure(project)
-    targets, candidates, reason, word = _resolve(project["id"], root, path, line, column)
+    root, sha = _ensure(project, rev or None)
+    targets, candidates, reason, word = _resolve(project["id"], root, path, line, column, sha)
     return {
         "targets": targets,
         "candidates": candidates,
@@ -243,10 +299,11 @@ def get_references(
     path: str = Query(min_length=1),
     line: int = Query(ge=1),
     column: int = Query(ge=1),
+    rev: str = Query(default=""),
 ) -> dict[str, Any]:
     """All recorded occurrences of the symbol under the cursor."""
-    root = _ensure(project)
-    targets, candidates, reason, word = _resolve(project["id"], root, path, line, column)
+    root, sha = _ensure(project, rev or None)
+    targets, candidates, reason, word = _resolve(project["id"], root, path, line, column, sha)
     if len(targets) != 1:
         return {
             "target": None,
@@ -257,7 +314,11 @@ def get_references(
             "word": word,
         }
     target = targets[0]
-    rows, truncated = symbols.refs_to(project["id"], target["node_id"], limit=MAX_REFERENCES)
+    rows, truncated = (
+        revision_symbols.refs_to(project["id"], sha, target["node_id"], limit=MAX_REFERENCES)
+        if sha
+        else symbols.refs_to(project["id"], target["node_id"], limit=MAX_REFERENCES)
+    )
     locations = [
         {
             "path": row["path"],
@@ -290,10 +351,11 @@ def get_hover(
     path: str = Query(min_length=1),
     line: int = Query(ge=1),
     column: int = Query(ge=1),
+    rev: str = Query(default=""),
 ) -> dict[str, Any]:
     """Markdown for the editor hover card: signature, docstring and location."""
-    root = _ensure(project)
-    targets, candidates, reason, word = _resolve(project["id"], root, path, line, column)
+    root, sha = _ensure(project, rev or None)
+    targets, candidates, reason, word = _resolve(project["id"], root, path, line, column, sha)
     if not targets:
         if candidates:
             lines = [
@@ -353,8 +415,14 @@ def search_symbols(
     _: TokenDep,
     q: str = Query(min_length=1),
     limit: int = Query(default=50, ge=1, le=200),
+    rev: str = Query(default=""),
 ) -> dict[str, Any]:
     """Project symbol search, used by the future Ctrl+T palette."""
-    _ensure(project)
-    rows = symbols.search_definitions(project["id"], q, limit=limit)
+    root, sha = _ensure(project, rev or None)
+    rows = (
+        revision_symbols.search_definitions(project["id"], sha, q, limit=limit)
+        if sha
+        else symbols.search_definitions(project["id"], q, limit=limit)
+    )
+    del root
     return {"symbols": [_payload(row, "EXTRACTED") for row in rows]}

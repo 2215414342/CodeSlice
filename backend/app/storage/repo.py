@@ -165,7 +165,11 @@ def get_conversation(conversation_id: str) -> dict[str, Any] | None:
 _CONVERSATION_SELECT = """
     SELECT c.*,
            p.name AS project_name,
-           EXISTS(SELECT 1 FROM notes n WHERE n.conversation_id = c.id) AS has_note
+           EXISTS(SELECT 1 FROM notes n WHERE n.conversation_id = c.id) AS has_note,
+           (SELECT n.id FROM notes n WHERE n.conversation_id = c.id
+             ORDER BY n.id LIMIT 1) AS note_id,
+           (SELECT n.title FROM notes n WHERE n.conversation_id = c.id
+             ORDER BY n.id LIMIT 1) AS note_title
       FROM conversations c
       LEFT JOIN projects p ON p.id = c.project_id
 """
@@ -502,14 +506,27 @@ def create_note(
     conversation_id: str | None = None,
     folder_id: int | None = None,
     file_name: str | None = None,
+    base_commit: str | None = None,
+    base_dirty: bool = False,
 ) -> dict[str, Any]:
     now = utcnow()
     with write_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO notes (project_id, conversation_id, folder_id, title, file_name, content_md, created_at, "
-            "updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (project_id, conversation_id, folder_id, title, file_name or title, content_md, now, now),
+            "INSERT INTO notes (project_id, conversation_id, folder_id, title, file_name, content_md, "
+            "base_commit, base_dirty, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                project_id,
+                conversation_id,
+                folder_id,
+                title,
+                file_name or title,
+                content_md,
+                base_commit,
+                int(bool(base_dirty)),
+                now,
+                now,
+            ),
         )
         note_id = int(cur.lastrowid or 0)
         # The notes graph is a projection of this table; drop it in the same
@@ -548,6 +565,78 @@ def update_note(
         )
         drop_notes_graph_cache(conn)
     return get_note(note_id)
+
+
+def set_note_base(note_id: int, commit_sha: str | None, dirty: bool = False) -> None:
+    """Stamp the revision a note was generated from (re-stamped on regeneration)."""
+    with write_conn() as conn:
+        conn.execute(
+            "UPDATE notes SET base_commit = ?, base_dirty = ? WHERE id = ?",
+            (commit_sha, int(bool(dirty)), note_id),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# note refs (每篇笔记指向的代码)
+# --------------------------------------------------------------------------- #
+def replace_note_refs(note_id: int, project_id: int, refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Replace a note's code references inside one transaction.
+
+    Refs are derived data: the note body is the asset, this table is the index
+    that lets the reader answer "is this reference still where it was?" without
+    parsing Markdown on every open.
+    """
+    now = utcnow()
+    with write_conn() as conn:
+        conn.execute("DELETE FROM note_refs WHERE note_id = ?", (note_id,))
+        for ref in refs:
+            conn.execute(
+                """INSERT INTO note_refs
+                   (note_id, project_id, path, start_line, end_line, symbol, commit_sha,
+                    snippet, code_hash, status, resolved_commit, checked_at, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    note_id,
+                    project_id,
+                    ref["path"],
+                    int(ref.get("start_line") or 1),
+                    int(ref.get("end_line") or ref.get("start_line") or 1),
+                    ref.get("symbol"),
+                    ref.get("commit_sha"),
+                    ref.get("snippet"),
+                    ref.get("code_hash"),
+                    ref.get("status") or "unchanged",
+                    ref.get("resolved_commit"),
+                    now,
+                    now,
+                ),
+            )
+    return list_note_refs(note_id)
+
+
+def list_note_refs(note_id: int) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM note_refs WHERE note_id = ? ORDER BY path, start_line, id", (note_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_note_ref(ref_id: int, **fields: Any) -> None:
+    allowed = {"status", "start_line", "end_line", "snippet", "code_hash", "checked_at", "resolved_commit"}
+    clearable = {"resolved_commit"}
+    sets, params = [], []
+    for key, val in fields.items():
+        if key not in allowed:
+            continue
+        if val is None and key not in clearable:
+            continue
+        sets.append(f"{key} = ?")
+        params.append(val)
+    if sets:
+        params.append(ref_id)
+        with write_conn() as conn:
+            conn.execute(f"UPDATE note_refs SET {', '.join(sets)} WHERE id = ?", params)
 
 
 # --------------------------------------------------------------------------- #
@@ -741,11 +830,14 @@ def create_anchor(
     snippet: str | None = None,
     code_hash: str | None = None,
     commit_sha: str | None = None,
+    worktree_dirty: bool = False,
 ) -> dict[str, Any]:
     """Insert an anchor, or refresh the existing one for the same code range.
 
     A recurring citation (same conversation, same file, same range) must not pile
     up duplicate rows: the anchor panel is a reading list, not an event log.
+    A recurring citation is also a fresh reading of the code, so it re-stamps the
+    revision: the old commit sha no longer describes what the user just saw.
     """
     now = utcnow()
     with write_conn() as conn:
@@ -757,16 +849,20 @@ def create_anchor(
         ).fetchone()
         if existing is not None:
             conn.execute(
-                "UPDATE code_anchors SET status = 'unchanged', checked_at = ?, snippet = ? WHERE id = ?",
-                (now, snippet, existing["id"]),
+                """UPDATE code_anchors
+                      SET status = 'unchanged', checked_at = ?, snippet = ?, code_hash = ?,
+                          commit_sha = ?, worktree_dirty = ?, resolved_commit = NULL,
+                          resolved_status = NULL
+                    WHERE id = ?""",
+                (now, snippet, code_hash, commit_sha, int(bool(worktree_dirty)), existing["id"]),
             )
             anchor_id = int(existing["id"])
         else:
             cur = conn.execute(
                 """INSERT INTO code_anchors
                    (project_id, conversation_id, file_path, commit_sha, symbol, start_line, end_line,
-                    snippet, code_hash, status, checked_at, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    snippet, code_hash, status, worktree_dirty, checked_at, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     project_id,
                     conversation_id,
@@ -778,6 +874,7 @@ def create_anchor(
                     snippet,
                     code_hash,
                     "unchanged",
+                    int(bool(worktree_dirty)),
                     now,
                     now,
                 ),
@@ -792,12 +889,30 @@ def get_anchor(anchor_id: int) -> dict[str, Any] | None:
 
 
 def update_anchor(anchor_id: int, **fields: Any) -> dict[str, Any] | None:
-    allowed = {"status", "start_line", "end_line", "snippet", "code_hash", "checked_at", "symbol"}
+    allowed = {
+        "status",
+        "start_line",
+        "end_line",
+        "snippet",
+        "code_hash",
+        "checked_at",
+        "symbol",
+        "worktree_dirty",
+        "resolved_commit",
+        "resolved_status",
+    }
+    # These two are cleared when the anchor starts matching the work tree again,
+    # so ``None`` must reach the UPDATE instead of being filtered out as "not
+    # provided" (which would leave a stale resolution behind forever).
+    clearable = {"resolved_commit", "resolved_status"}
     sets, params = [], []
     for key, val in fields.items():
-        if key in allowed and val is not None:
-            sets.append(f"{key} = ?")
-            params.append(val)
+        if key not in allowed:
+            continue
+        if val is None and key not in clearable:
+            continue
+        sets.append(f"{key} = ?")
+        params.append(val)
     if sets:
         params.append(anchor_id)
         with write_conn() as conn:

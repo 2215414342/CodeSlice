@@ -24,8 +24,10 @@ export function FileTree({ nodes, dirtyPaths }: FileTreeProps): ReactNode {
   const [loaded, setLoaded] = useState<Record<string, TreeNode[]>>({})
   const [loading, setLoading] = useState<Set<string>>(() => new Set())
   const [error, setError] = useState<string | null>(null)
-  const { openFile, project, reveal } = useApp()
+  const { openFile, project, reveal, revision } = useApp()
   const projectId = project?.id ?? null
+  /** Non-null means the tree is showing a commit, so deeper folders come from git. */
+  const rev = revision.kind === 'rev' ? revision.sha : null
 
   const toggle = useCallback(
     (node: TreeNode) => {
@@ -41,8 +43,10 @@ export function FileTree({ nodes, dirtyPaths }: FileTreeProps): ReactNode {
 
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
-      api
-        .getTree(projectId, path, 2)
+      const fetchChildren = rev
+        ? api.getGitTree(projectId, rev, path, 2)
+        : api.getTree(projectId, path, 2)
+      fetchChildren
         .then((children) => setLoaded((prev) => ({ ...prev, [path]: children })))
         .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
         .finally(() =>
@@ -53,7 +57,7 @@ export function FileTree({ nodes, dirtyPaths }: FileTreeProps): ReactNode {
           }),
         )
     },
-    [expanded, loaded, projectId],
+    [expanded, loaded, projectId, rev],
   )
 
   return (

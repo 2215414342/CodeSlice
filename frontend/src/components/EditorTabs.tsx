@@ -103,6 +103,10 @@ export function EditorTabs({ onToggleTerminal, terminalOpen }: EditorTabsProps):
               >
                 <Icon name={iconOf(tab)} size={11} />
                 <span className="editor-tab-title">{title}</span>
+                {tab.kind === 'file' && tab.rev ? (
+                  <span className="tag warn tab-rev">{tab.rev.slice(0, 7)}</span>
+                ) : null}
+                {tab.kind === 'diff' ? <span className="tag warn tab-rev">diff</span> : null}
               </button>
               <button
                 className="editor-tab-close"
@@ -142,17 +146,19 @@ export function EditorTabs({ onToggleTerminal, terminalOpen }: EditorTabsProps):
                       const value =
                         tab.kind === 'file'
                           ? tab.path
-                          : tab.kind === 'note'
-                            ? tab.note.title
-                            : tab.scope === 'notes'
-                              ? '笔记图谱'
-                              : '代码图谱'
+                          : tab.kind === 'diff'
+                            ? tab.path
+                            : tab.kind === 'note'
+                              ? tab.note.title
+                              : tab.scope === 'notes'
+                                ? '笔记图谱'
+                                : '代码图谱'
                       void navigator.clipboard?.writeText(value)
                       setMenuIndex(null)
                     }}
                     type="button"
                   >
-                    {tab.kind === 'file' ? '复制路径' : tab.kind === 'note' ? '复制标题' : '复制名称'}
+                    {tab.kind === 'file' || tab.kind === 'diff' ? '复制路径' : tab.kind === 'note' ? '复制标题' : '复制名称'}
                   </button>
                 </div>
               ) : null}
@@ -177,26 +183,31 @@ export function EditorTabs({ onToggleTerminal, terminalOpen }: EditorTabsProps):
 }
 
 function keyOf(tab: EditorTab): string {
-  if (tab.kind === 'file') return `file:${tab.path}`
+  // A path can be open twice — once from the work tree and once from a commit.
+  if (tab.kind === 'file') return `file:${tab.rev ?? 'worktree'}:${tab.path}`
   if (tab.kind === 'note') return `note:${tab.note.id}`
+  if (tab.kind === 'diff') return `diff:${tab.rev ?? 'worktree'}:${tab.path}`
   return `graph:${tab.scope}`
 }
 
 function titleOf(tab: EditorTab): string {
   if (tab.kind === 'file') return baseName(tab.path)
+  if (tab.kind === 'diff') return baseName(tab.path)
   if (tab.kind === 'note') return tab.note.title
   return tab.scope === 'notes' ? '笔记图谱' : '代码图谱'
 }
 
 /** Full path or note origin, shown on hover. */
 function hintOf(tab: EditorTab): string {
-  if (tab.kind === 'file') return tab.path
+  if (tab.kind === 'file') return tab.rev ? `${tab.path} @ ${tab.rev}` : tab.path
+  if (tab.kind === 'diff') return `${tab.path} · ${tab.rev ? `${tab.rev.slice(0, 7)} ↔ 父提交` : '工作区 ↔ HEAD'}`
   if (tab.kind === 'note') return tab.note.project_name ? `${tab.note.title} · ${tab.note.project_name}` : tab.note.title
   return tab.scope === 'notes' ? '知识库笔记之间的关系' : '项目代码结构的知识图谱'
 }
 
-function iconOf(tab: EditorTab): 'file-code' | 'notes' | 'network' {
+function iconOf(tab: EditorTab): 'file-code' | 'git-branch' | 'notes' | 'network' {
   if (tab.kind === 'file') return 'file-code'
+  if (tab.kind === 'diff') return 'git-branch'
   if (tab.kind === 'note') return 'notes'
   return 'network'
 }

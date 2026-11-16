@@ -62,6 +62,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
     clearCitation,
     activeConversationId,
     focusConversation,
+    focusNote,
     refreshKey,
     bumpRefresh,
     openNoteView,
@@ -74,11 +75,18 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   } = useApp()
   const projectId = project?.id ?? null
   const path = openFile?.path ?? null
+  /** Set when this tab is a read-only historical file (`git/file?rev=`). */
+  const rev = openFile?.rev ?? null
 
   const file = useAsync(
     (signal) =>
-      projectId !== null && path !== null ? api.getFile(projectId, path, signal) : Promise.resolve(null),
-    [projectId, path],
+      projectId !== null && path !== null
+        ? rev
+          // A revision is immutable: read the blob, never the work tree.
+          ? api.getGitFile(projectId, rev, path, signal)
+          : api.getFile(projectId, path, signal)
+        : Promise.resolve(null),
+    [projectId, path, rev],
     { enabled: projectId !== null && path !== null },
   )
 
@@ -190,6 +198,10 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   })
 
   const updateSelection = useCallback((instance: MonacoEditor.IStandaloneCodeEditor) => {
+    // Any render while the button is down resizes the editor and ends the native
+    // drag. The scheduler already checks this; guarding the commit itself closes
+    // the remaining entry points (mount, pointer handlers, late frames).
+    if (mouseSelectingRef.current) return
     const model = instance.getModel()
     const range = instance.getSelection()
     if (!model || !range || range.isEmpty()) {
@@ -300,6 +312,15 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         if (!mouseSelectingRef.current) scheduleSelection(instance)
       })
       const editorNode = instance.getDomNode()
+      /** Enter the no-render window before any editor-owned input surface. */
+      const beginMouseSelection = (event: MouseEvent | PointerEvent) => {
+        if (event.button !== 0) return
+        mouseSelectingRef.current = true
+        if (selectionFrame.current !== null) {
+          window.cancelAnimationFrame(selectionFrame.current)
+          selectionFrame.current = null
+        }
+      }
       const onMouseDownCapture = (event: MouseEvent) => {
         if (event.button !== 0) return
         const hit = instance.getTargetAtClientPoint(event.clientX, event.clientY)
@@ -320,19 +341,28 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         // native drag; the resulting Monaco option/layout update can terminate
         // the drag after only one or two lines. Keep every editor press inside
         // the no-render window and commit the selection once on mouseup.
-        mouseSelectingRef.current = true
-        if (mouseSelectingRef.current && selectionFrame.current !== null) {
-          window.cancelAnimationFrame(selectionFrame.current)
-          selectionFrame.current = null
-        }
+        beginMouseSelection(event)
+      }
+      const onPointerDownCapture = (event: PointerEvent) => {
+        // Pointer events precede mousedown in Chromium. Entering the guard here
+        // also covers pens, touchpads and any surface that consumes mousedown.
+        beginMouseSelection(event)
       }
       const onMouseUpCapture = () => {
         if (!mouseSelectingRef.current) return
         mouseSelectingRef.current = false
         scheduleSelection(instance)
       }
+      const onPointerCancel = () => {
+        if (!mouseSelectingRef.current) return
+        mouseSelectingRef.current = false
+        scheduleSelection(instance)
+      }
+      editorNode?.addEventListener('pointerdown', onPointerDownCapture, true)
       editorNode?.addEventListener('mousedown', onMouseDownCapture, true)
       window.addEventListener('mouseup', onMouseUpCapture, true)
+      window.addEventListener('pointerup', onMouseUpCapture, true)
+      window.addEventListener('pointercancel', onPointerCancel, true)
       window.addEventListener('blur', onMouseUpCapture)
       // Line numbers are a picker: each click adds a line to the set, clicking it
       // again removes it, and dragging over the numbers sweeps a range. Monaco's
@@ -423,8 +453,11 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         ctrlLeaveListener.dispose()
         window.removeEventListener('keyup', releaseCtrlLink)
         window.removeEventListener('blur', releaseCtrlLink)
+        editorNode?.removeEventListener('pointerdown', onPointerDownCapture, true)
         editorNode?.removeEventListener('mousedown', onMouseDownCapture, true)
         window.removeEventListener('mouseup', onMouseUpCapture, true)
+        window.removeEventListener('pointerup', onMouseUpCapture, true)
+        window.removeEventListener('pointercancel', onPointerCancel, true)
         window.removeEventListener('blur', onMouseUpCapture)
         mouseSelectingRef.current = false
         if (selectionFrame.current !== null) {
@@ -503,12 +536,9 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
     const maxLine = model.getLineCount()
     const from = Math.max(1, Math.min(citationHighlight.start_line, maxLine))
     const to = Math.max(from, Math.min(citationHighlight.end_line, maxLine))
-    collection.set([
-      {
-        range: { startLineNumber: from, startColumn: 1, endLineNumber: to, endColumn: model.getLineMaxColumn(to) },
-        options: { isWholeLine: true, className: 'citation-highlight', inlineClassName: 'citation-line-flash' },
-      },
-    ])
+    // Reuse the same per-line frame builder as code cards so this reads as one
+    // continuous box (with top/bottom edges) rather than a thin left rail.
+    collection.set(frameDecorations(model, [{ start: from, end: to }], 'citation-frame'))
     instance.revealLineInCenter(from)
     // `ready` is in the deps because clicking a citation from a note view mounts
     // this pane from scratch: the target is already set by the time Monaco hands
@@ -621,8 +651,30 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         },
       })
     }
+    // A note reference is not a conversation card, but it deserves the same
+    // little label above its frame: the note title, and clicking it returns to
+    // the conversation the note was distilled from. If a real code card already
+    // owns this exact range, keep that one instead of stacking two labels.
+    if (citationHighlight?.path === path && citationHighlight.label) {
+      const start = citationHighlight.start_line
+      const end = citationHighlight.end_line
+      const rangeKey = `${start}-${end}`
+      if (!seen.has(rangeKey)) {
+        seen.add(rangeKey)
+        items.push({
+          key: `citation-${citationHighlight.noteId ?? path}-${rangeKey}`,
+          start,
+          label: citationHighlight.label,
+          active: true,
+          onClick: () => {
+            if (citationHighlight.conversationId) focusConversation(citationHighlight.conversationId)
+            else if (citationHighlight.noteId != null) focusNote(citationHighlight.noteId)
+          },
+        })
+      }
+    }
     return items
-  }, [cards.data, annotations.data, annotations.reload, activeConversationId, focusConversation, expandedAnnotations, projectId, path])
+  }, [cards.data, annotations.data, annotations.reload, activeConversationId, focusConversation, focusNote, expandedAnnotations, projectId, path, citationHighlight])
 
   // Reserve a title strip above every framed range. The zone belongs to the
   // view, not to the model, so it has to be refreshed whenever the cards change
@@ -773,18 +825,20 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   // pane down ("change in the order of Hooks").
   const goToDefinitionAt = useCallback(
     async (position: EditorPosition) => {
+      // The symbol index describes the work tree; jumping in a historical file
+      // would land on lines that belong to a different revision.
       if (projectId === null || !path || navBusyRef.current) return
       navBusyRef.current = true
       setNavBusy(true)
       setNavPicker(null)
       setNavNotice(null)
       try {
-        const result = await api.getDefinition(projectId, path, position.lineNumber, position.column)
+        const result = await api.getDefinition(projectId, path, position.lineNumber, position.column, undefined, rev)
         if (result.targets.length === 1) {
           const target = result.targets[0]
           // Frame the declaration line, not the whole body: jumping to a large
           // function should read as "here is the definition", not "select 60 lines".
-          navigateTo(target.path, target.line, target.line)
+          navigateTo(target.path, target.line, target.line, rev)
           setNavFlash({
             path: target.path,
             line: target.line,
@@ -824,7 +878,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         setNavBusy(false)
       }
     },
-    [navigateTo, path, projectId],
+    [navigateTo, path, projectId, rev],
   )
 
   const showReferencesAt = useCallback(
@@ -835,7 +889,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
       setNavPicker(null)
       setNavNotice(null)
       try {
-        const result = await api.getReferences(projectId, path, position.lineNumber, position.column)
+        const result = await api.getReferences(projectId, path, position.lineNumber, position.column, undefined, rev)
         const target = result.target
         if (target && result.locations.length > 0) {
           setNavPicker({
@@ -864,13 +918,13 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         setNavBusy(false)
       }
     },
-    [path, projectId],
+    [path, projectId, rev],
   )
 
   const pickNavChoice = useCallback(
     (item: NavChoice) => {
       setNavPicker(null)
-      navigateTo(item.path, item.line, item.end_line)
+      navigateTo(item.path, item.line, item.end_line, rev)
       if (item.symbolName) {
         setNavFlash({
           path: item.path,
@@ -881,7 +935,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         })
       }
     },
-    [navigateTo],
+    [navigateTo, rev],
   )
 
   navHandlersRef.current = {
@@ -894,9 +948,9 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   // The hover provider is global (registered once), so it reads the active
   // project/file from this module-level context.
   useEffect(() => {
-    setNavigationContext(path && projectId !== null ? { projectId, path } : null)
+    setNavigationContext(path && projectId !== null ? { projectId, path, rev } : null)
     return () => setNavigationContext(null)
-  }, [path, projectId])
+  }, [path, projectId, rev])
 
   useEffect(() => {
     clearNavigationHoverCache()
@@ -1021,7 +1075,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
     setCardError(null)
     setGraphLocating(true)
     try {
-      const result = await api.locateGraphNode(projectId, path, target)
+      const result = await api.locateGraphNode(projectId, path, target, undefined, rev)
       if (!result.node) {
         setCardError('当前文件位置不在知识图谱中，请先重建图谱。')
         return
@@ -1043,6 +1097,11 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         </span>
         {content ? (
           <>
+            {rev ? (
+              <span className="tag warn" title={`只读：${rev}`}>
+                历史版本 {rev.slice(0, 7)}
+              </span>
+            ) : null}
             {binary
               ? <span className="tag">二进制</span>
               : <span className="tag accent">{content.language || languageFromPath(path)}</span>}
@@ -1053,7 +1112,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
           </>
         ) : null}
         <span className="spacer" />
-        {isDoc ? (
+        {isDoc && !rev ? (
           <div className="doc-mode" role="group" aria-label="文档显示方式">
             <button
               className={docEditing ? '' : 'active'}
@@ -1077,7 +1136,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
             </button>
           </div>
         ) : null}
-        {isDoc && docEditing ? (
+        {isDoc && docEditing && !rev ? (
           <button
             className="small primary doc-save"
             onClick={() => void saveDoc()}
@@ -1196,6 +1255,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         />
       ) : null}
 
+      <div className="selection-dock">
       {picked ? (
         <div className="selection-bar">
           <span className="lines">
@@ -1317,7 +1377,13 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
             清除引用
           </button>
         </div>
-      ) : null}
+      ) : (
+        <div className="selection-idle">
+          <Icon name="code" size={11} />
+          拖选代码后可提问、批注或在图谱中定位
+        </div>
+      )}
+      </div>
 
       {annotationDraft ? <div className="annotation-editor">
         <div className="annotation-editor-head">
@@ -1390,8 +1456,8 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
             language={languageFor(content)}
             path={content.path}
             onMountEditor={onMount}
-            readOnly={!docEditing}
-            onChange={docEditing ? updateDocDraft : undefined}
+            readOnly={!docEditing || Boolean(rev)}
+            onChange={docEditing && !rev ? updateDocDraft : undefined}
           />
         ) : null}
         {!file.loading && !content && !file.error ? (

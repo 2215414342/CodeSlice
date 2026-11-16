@@ -1,0 +1,552 @@
+/* Source-control sidebar (read-only VS Code-style changes + timeline). */
+
+.scm-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+
+  /* VS Code's SCM graph palette, one token per swimlane. */
+  --scm-panel-bg: var(--bg-panel);
+  --scm-lane-1: #ffb000;
+  --scm-lane-2: #dc267f;
+  --scm-lane-3: #c77b2a;
+  --scm-lane-4: #40b0a6;
+  --scm-lane-5: #b66dff;
+  --scm-lane-6: #6aa8ff;
+}
+
+:root[data-theme='light'] .scm-panel {
+  --scm-lane-1: #b26b00;
+  --scm-lane-2: #b01863;
+  --scm-lane-3: #91500b;
+  --scm-lane-4: #1c857d;
+  --scm-lane-5: #7d3fc4;
+  --scm-lane-6: #2b6fc9;
+}
+
+
+.scm-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 16px;
+}
+
+.scm-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line, var(--bg-elevated));
+}
+
+.scm-sha {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.scm-sha.accent {
+  color: var(--accent);
+}
+
+.scm-add {
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+}
+
+.scm-del {
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+}
+
+.scm-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 4px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.scm-count {
+  min-width: 16px;
+  height: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  text-align: center;
+}
+
+.scm-files {
+  display: flex;
+  flex-direction: column;
+  padding: 0 4px 6px;
+}
+
+.scm-file {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.scm-file:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.scm-file.focused {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.scm-status {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 13px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.scm-status.added {
+  color: var(--ok);
+}
+
+.scm-status.modified {
+  color: var(--warn);
+}
+
+.scm-status.deleted {
+  color: var(--danger);
+}
+
+.scm-status.renamed,
+.scm-status.copied {
+  color: var(--accent);
+}
+
+.scm-status.conflicted {
+  color: var(--danger);
+}
+
+.scm-file-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-file-name:hover {
+  color: var(--text);
+}
+
+.scm-file-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-old-path {
+  color: var(--text-faint);
+}
+
+.scm-empty {
+  padding: 10px 12px;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.scm-timeline-head {
+  margin-top: 4px;
+  border-top: 1px solid var(--line, var(--bg-elevated));
+  padding-top: 8px;
+}
+
+.scm-worktree {
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-faint);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.scm-worktree:hover {
+  color: var(--text);
+}
+
+.scm-worktree.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.scm-timeline {
+  display: flex;
+  flex-direction: column;
+  padding: 1px 3px 8px;
+}
+
+.scm-commit {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 22px;
+  padding: 0 6px 0 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-dim);
+  text-align: left;
+  cursor: pointer;
+}
+
+.scm-commit:hover {
+  background: var(--bg-hover);
+}
+
+.scm-commit.active {
+  background: var(--accent-soft);
+}
+
+.scm-graph {
+  display: block;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.scm-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scm-commit.active .scm-subject {
+  color: var(--accent-hover);
+}
+
+/* ----------------------------- commit hover ----------------------------- */
+
+.scm-hover-card {
+  position: fixed;
+  z-index: 40;
+  max-height: 240px;
+  overflow: hidden;
+  padding: 10px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-3);
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.scm-hover-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.scm-hover-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.scm-hover-dot {
+  color: var(--text-faint);
+}
+
+.scm-hover-time {
+  margin-top: 1px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+
+.scm-hover-sha {
+  margin-top: 6px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.scm-hover-note {
+  margin-top: 6px;
+  color: var(--warn);
+  font-size: 10.5px;
+}
+
+.scm-hover-stats {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.scm-hover-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 5px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.scm-hover-hint {
+  margin-top: 7px;
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+/* ------------------------------ diff pane ------------------------------- */
+
+.diff-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-panel);
+}
+
+.diff-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line, var(--bg-elevated));
+  background: var(--bg-elevated);
+  font-size: 12px;
+}
+
+.diff-side {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--line, var(--bg-elevated));
+  border-radius: var(--radius-xs);
+}
+
+.diff-side.old {
+  border-color: rgba(248, 81, 73, 0.28);
+}
+
+.diff-side.new {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.diff-file {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-sha {
+  color: var(--text-faint);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+
+.diff-arrow {
+  color: var(--text-faint);
+  display: inline-flex;
+}
+
+.diff-path {
+  max-width: 40%;
+  overflow: hidden;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-editor-host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.diff-surface {
+  height: 100%;
+}
+
+.diff-warning {
+  position: absolute;
+  top: 0;
+  right: 12px;
+  z-index: 2;
+  padding: 2px 8px;
+  border-radius: 0 0 var(--radius-xs) var(--radius-xs);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 10.5px;
+}
+
+.diff-binary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* Monaco applies this class to the decorated whole lines. */
+.diff-note-highlight {
+  background: rgba(210, 153, 34, 0.18);
+}
+
+/* --------------------------- note reference rows ------------------------- */
+
+.note-refs {
+  margin: 8px 0 0;
+  border: 1px solid var(--line, var(--bg-elevated));
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.note-refs-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line, var(--bg-elevated));
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.note-ref-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 3px;
+}
+
+.note-ref-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.note-ref-row:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.ref-status {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  font-size: 10px;
+}
+
+.ref-status.unchanged {
+  color: var(--ok);
+}
+
+.ref-status.moved {
+  color: var(--accent);
+}
+
+.ref-status.modified {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.ref-status.deleted {
+  color: var(--danger);
+}
+
+.ref-status.historical {
+  color: var(--text-faint);
+}
+
+.note-ref-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-ref-symbol {
+  margin-left: 6px;
+  color: var(--text-faint);
+}
+
+.note-refs-summary {
+  padding: 5px 10px 7px;
+  border-top: 1px solid var(--line, var(--bg-elevated));
+  font-size: 10.5px;
+}

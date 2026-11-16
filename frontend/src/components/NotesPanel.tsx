@@ -54,15 +54,17 @@ export function NotesPanel(): ReactNode {
     noteView,
     openNoteView,
     openGraph,
+    revision,
   } = useApp()
   const projectId = project?.id ?? null
+  const rev = revision.kind === 'rev' ? revision.sha : null
 
   const [scope, setScope] = useState<Scope>({ kind: 'all' })
   const [openFolders, setOpenFolders] = useState<Record<number, boolean>>({})
   const [query, setQuery] = useState('')
 
   const folders = useAsync((signal) => api.listNoteFolders(signal), [refreshKey])
-  const notes = useAsync((signal) => api.listNotes({}, signal), [refreshKey])
+  const notes = useAsync((signal) => api.listNotes({ rev }, signal), [refreshKey, rev])
 
   const [creating, setCreating] = useState<'note' | 'folder' | null>(null)
   const [saving, setSaving] = useState(false)
@@ -270,7 +272,7 @@ export function NotesPanel(): ReactNode {
 
   const renderNote = (note: Note, depth: number): ReactNode => (
     <div
-      className={`note-item${noteView?.id === note.id ? ' selected' : ''}${movingNoteId === note.id ? ' moving' : ''}`}
+      className={`note-item${noteView?.id === note.id ? ' selected' : ''}${movingNoteId === note.id ? ' moving' : ''}${note.note_state === 'later' ? ' later-version' : ''}`}
       key={note.id}
       style={{ marginLeft: `${depth * 16}px` }}
       onClick={() => openNoteView(note)}
@@ -284,6 +286,9 @@ export function NotesPanel(): ReactNode {
       <div className="note-head">
         <Icon name="notes" size={13} />
         <span className="note-title">{note.title}</span>
+        {note.note_state === 'later' ? (
+          <span className="badge warn" title="这条笔记写于所查看版本之后">此后新增</span>
+        ) : null}
         <div className="row-actions">
           <button
             type="button"

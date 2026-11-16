@@ -19,6 +19,11 @@ import type {
   GraphPayload,
   GraphSummaryEvent,
   GraphNode,
+  GitBranches,
+  GitCommitList,
+  GitRevision,
+  ScmChanges,
+  ScmPair,
   Health,
   HoverResult,
   IndexStatus,
@@ -159,6 +164,72 @@ export const getFile = (projectId: number, path: string, signal?: AbortSignal): 
   return request<FileContent>(`/api/projects/${projectId}/file?${params.toString()}`, { signal })
 }
 
+/* ------------------------------- revisions --------------------------------- */
+
+export const getGitBranches = (projectId: number, signal?: AbortSignal): Promise<GitBranches> =>
+  request<GitBranches>(`/api/projects/${projectId}/git/branches`, { signal })
+
+/** Pin a branch/tag/sha to the commit it points at right now. */
+export const resolveGitRev = (projectId: number, ref: string, signal?: AbortSignal): Promise<GitRevision> => {
+  const params = new URLSearchParams({ ref })
+  return request<GitRevision>(`/api/projects/${projectId}/git/rev?${params.toString()}`, { signal })
+}
+
+export const listGitCommits = (
+  projectId: number,
+  options: { limit?: number; skip?: number; path?: string; topo?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<GitCommitList> => {
+  const params = new URLSearchParams({ limit: String(options.limit ?? 20), skip: String(options.skip ?? 0) })
+  if (options.path) params.set('path', options.path)
+  if (options.topo) params.set('topo', 'true')
+  return request<GitCommitList>(`/api/projects/${projectId}/git/commits?${params.toString()}`, { signal })
+}
+
+export const getGitTree = (
+  projectId: number,
+  rev: string,
+  path = '',
+  depth = 2,
+  signal?: AbortSignal,
+): Promise<TreeNode[]> => {
+  const params = new URLSearchParams({ rev, path, depth: String(depth) })
+  return request<TreeNode[]>(`/api/projects/${projectId}/git/tree?${params.toString()}`, { signal })
+}
+
+/** A file as it existed at `rev`; read-only, never written back. */
+export const getGitFile = (
+  projectId: number,
+  rev: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<FileContent> => {
+  const params = new URLSearchParams({ rev, path })
+  return request<FileContent>(`/api/projects/${projectId}/git/file?${params.toString()}`, { signal })
+}
+
+/** Change set of a commit (vs its parent) or of the work tree (vs HEAD). */
+export const getScmChanges = (
+  projectId: number,
+  rev?: string | null,
+  signal?: AbortSignal,
+): Promise<ScmChanges> => {
+  const query = rev ? `?rev=${encodeURIComponent(rev)}` : ''
+  return request<ScmChanges>(`/api/projects/${projectId}/git/changes${query}`, { signal })
+}
+
+/** Old and new buffers for the diff editor. */
+export const getScmPair = (
+  projectId: number,
+  path: string,
+  rev?: string | null,
+  signal?: AbortSignal,
+): Promise<ScmPair> => {
+  const params = new URLSearchParams({ path })
+  if (rev) params.set('rev', rev)
+  return request<ScmPair>(`/api/projects/${projectId}/git/pair?${params.toString()}`, { signal })
+}
+
 /**
  * Write a text file back to disk.
  *
@@ -230,11 +301,17 @@ export const searchProject = (
  * The whole payload comes at once: the layout algorithm needs every node and
  * edge, and paginating a graph is far more work than it saves over localhost.
  */
-export const getGraph = (projectId: number, signal?: AbortSignal): Promise<GraphPayload> =>
-  request<GraphPayload>(`/api/projects/${projectId}/graph`, { signal })
+export const getGraph = (projectId: number, signal?: AbortSignal, rev?: string | null): Promise<GraphPayload> => {
+  const params = new URLSearchParams()
+  if (rev) params.set('rev', rev)
+  const query = params.toString()
+  return request<GraphPayload>(`/api/projects/${projectId}/graph${query ? `?${query}` : ''}`, { signal })
+}
 
-export const getNotesGraph = (signal?: AbortSignal): Promise<GraphPayload> =>
-  request<GraphPayload>('/api/graphs/notes', { signal })
+export const getNotesGraph = (signal?: AbortSignal, rev?: string | null): Promise<GraphPayload> => {
+  const query = rev ? `?rev=${encodeURIComponent(rev)}` : ''
+  return request<GraphPayload>(`/api/graphs/notes${query}`, { signal })
+}
 
 /** Persist settled coordinates so the next visit can skip force-atlas entirely. */
 export const saveGraphLayout = (
@@ -242,13 +319,18 @@ export const saveGraphLayout = (
   projectId: number,
   layoutKey: string,
   positions: Record<string, { x: number; y: number }>,
-): Promise<{ ok: boolean }> =>
-  request<{ ok: boolean }>(
+  rev?: string | null,
+): Promise<{ ok: boolean }> => {
+  const params = new URLSearchParams()
+  if (scope === 'code' && rev) params.set('rev', rev)
+  const query = params.toString()
+  return request<{ ok: boolean }>(
     scope === 'code'
-      ? `/api/projects/${projectId}/graph/layout`
+      ? `/api/projects/${projectId}/graph/layout${query ? `?${query}` : ''}`
       : '/api/graphs/notes/layout',
     { method: 'PUT', body: { layout_key: layoutKey, positions } },
   )
+}
 
 /**
  * Streams the AI relationship summary as SSE frames.
@@ -262,9 +344,13 @@ export async function* streamGraphSummary(
   projectId: number,
   nodeId: string,
   signal?: AbortSignal,
+  rev?: string | null,
 ): AsyncGenerator<GraphSummaryEvent> {
+  const params = new URLSearchParams()
+  if (scope === 'code' && rev) params.set('rev', rev)
+  const query = params.toString()
   const path = scope === 'code'
-    ? `/api/projects/${projectId}/graph/summary/stream`
+    ? `/api/projects/${projectId}/graph/summary/stream${query ? `?${query}` : ''}`
     : '/api/graphs/notes/summary/stream'
   yield* postJsonSse<GraphSummaryEvent>(path, { node_id: nodeId }, signal)
 }
@@ -276,9 +362,10 @@ export const getConversationGraphTargets = (id: string, signal?: AbortSignal):
 /** Force a rebuild, for when the user changed ignore rules or wants a fresh view. */
 export const rebuildGraph = (
   projectId: number,
+  rev?: string | null,
 ): Promise<{ nodes: number; edges: number; communities: number; rebuilt: boolean }> =>
   request<{ nodes: number; edges: number; communities: number; rebuilt: boolean }>(
-    `/api/projects/${projectId}/graph/build`,
+    `/api/projects/${projectId}/graph/build${rev ? `?rev=${encodeURIComponent(rev)}` : ''}`,
     { method: 'POST' },
   )
 
@@ -288,8 +375,10 @@ export const getGraphNode = (
   nodeId: string,
   depth = 1,
   signal?: AbortSignal,
+  rev?: string | null,
 ): Promise<GraphNodeDetail> => {
   const params = new URLSearchParams({ node_id: nodeId, depth: String(depth) })
+  if (rev) params.set('rev', rev)
   return request<GraphNodeDetail>(`/api/projects/${projectId}/graph/node?${params.toString()}`, { signal })
 }
 
@@ -299,8 +388,10 @@ export const locateGraphNode = (
   path: string,
   line: number,
   signal?: AbortSignal,
+  rev?: string | null,
 ): Promise<{ node: GraphNode | null }> => {
   const params = new URLSearchParams({ path, line: String(line) })
+  if (rev) params.set('rev', rev)
   return request<{ node: GraphNode | null }>(
     `/api/projects/${projectId}/graph/locate?${params.toString()}`,
     { signal },
@@ -320,8 +411,10 @@ export const getDefinition = (
   line: number,
   column: number,
   signal?: AbortSignal,
+  rev?: string | null,
 ): Promise<DefinitionResult> => {
   const params = new URLSearchParams({ path, line: String(line), column: String(column) })
+  if (rev) params.set('rev', rev)
   return request<DefinitionResult>(
     `/api/projects/${projectId}/definition?${params.toString()}`,
     { signal },
@@ -334,8 +427,10 @@ export const getReferences = (
   line: number,
   column: number,
   signal?: AbortSignal,
+  rev?: string | null,
 ): Promise<ReferencesResult> => {
   const params = new URLSearchParams({ path, line: String(line), column: String(column) })
+  if (rev) params.set('rev', rev)
   return request<ReferencesResult>(
     `/api/projects/${projectId}/references?${params.toString()}`,
     { signal },
@@ -348,8 +443,10 @@ export const getHover = (
   line: number,
   column: number,
   signal?: AbortSignal,
+  rev?: string | null,
 ): Promise<HoverResult> => {
   const params = new URLSearchParams({ path, line: String(line), column: String(column) })
+  if (rev) params.set('rev', rev)
   return request<HoverResult>(
     `/api/projects/${projectId}/hover?${params.toString()}`,
     { signal },
@@ -598,13 +695,20 @@ export const deleteAnnotation = (id: number): Promise<{ ok: boolean }> =>
  * folder of the user's tree, and `unfiled` to notes that are not in a folder.
  */
 export const listNotes = async (
-  options: { projectId?: number | null; folderId?: number | null; unfiled?: boolean } = {},
+  options: {
+    projectId?: number | null
+    folderId?: number | null
+    unfiled?: boolean
+    /** Annotate each note with whether it existed at this commit. */
+    rev?: string | null
+  } = {},
   signal?: AbortSignal,
 ): Promise<Note[]> => {
   const params = new URLSearchParams()
   if (options.projectId != null) params.set('project_id', String(options.projectId))
   if (options.folderId != null) params.set('folder_id', String(options.folderId))
   if (options.unfiled) params.set('unfiled', 'true')
+  if (options.rev) params.set('rev', options.rev)
   const query = params.toString()
   return request<Note[]>(`/api/notes${query ? `?${query}` : ''}`, { signal })
 }
@@ -631,8 +735,10 @@ export const createNote = (body: NoteCreateBody): Promise<Note> =>
   request<Note>('/api/notes', { method: 'POST', body })
 
 /** One note by id; used when the reader is opened straight onto a note. */
-export const getNote = (noteId: number, signal?: AbortSignal): Promise<Note> =>
-  request<Note>(`/api/notes/${noteId}`, { signal })
+export const getNote = (noteId: number, signal?: AbortSignal, rev?: string | null): Promise<Note> => {
+  const query = rev ? `?rev=${encodeURIComponent(rev)}` : ''
+  return request<Note>(`/api/notes/${noteId}${query}`, { signal })
+}
 
 /**
  * Summarises a whole conversation (every user/assistant turn) into one note.

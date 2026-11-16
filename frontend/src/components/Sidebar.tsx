@@ -6,11 +6,13 @@ import { FilePanel } from './FilePanel'
 import { Icon } from './Icon'
 import type { IconName } from './Icon'
 import { NotesPanel } from './NotesPanel'
+import { ScmPanel } from './ScmPanel'
 
 const TABS: Array<{ id: SidebarTab; label: string; icon: IconName; hint: string }> = [
   { id: 'files', label: '文件', icon: 'folder', hint: '文件树与项目搜索' },
   { id: 'chats', label: '对话', icon: 'message', hint: '本项目与其他项目的对话' },
   { id: 'notes', label: '笔记', icon: 'notes', hint: '阅读笔记' },
+  { id: 'scm', label: '源代码', icon: 'git-branch', hint: '源代码管理：更改与提交时间线（只读）' },
 ]
 
 interface SidebarProps {
@@ -51,6 +53,7 @@ export function Sidebar({ onNewConversation }: SidebarProps): ReactNode {
       {sidebarTab === 'files' ? <FilePanel /> : null}
       {sidebarTab === 'chats' ? <ConversationList onNewConversation={onNewConversation} /> : null}
       {sidebarTab === 'notes' ? <NotesPanel /> : null}
+      {sidebarTab === 'scm' ? <ScmPanel /> : null}
     </div>
   )
 }

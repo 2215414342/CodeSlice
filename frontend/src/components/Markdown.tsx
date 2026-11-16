@@ -30,26 +30,35 @@ export interface MarkdownProps {
   resolveImage?: (src: string) => string | null
   /** Text shown under an image that could not be resolved. */
   imageFallback?: (src: string) => string
+  /**
+   * Custom handler for `path:line-line` citations. The note reader uses this to
+   * resolve the reference against the note's saved ranges (current vs history)
+   * instead of the generic "open the work tree" behavior.
+   */
+  onCite?: (path: string, start: number, end: number) => void
 }
 
 export const Markdown = memo(function Markdown({
   text,
   resolveImage,
   imageFallback,
+  onCite,
 }: MarkdownProps): ReactNode {
   const blocks = useMemo(() => parseBlocks(text), [text])
   return (
     <ImageResolver.Provider value={resolveImage ?? null}>
-      <div className="md">
-        {blocks.map((block, index) => (
-          <Block
-            key={index}
-            block={block}
-            resolveImage={resolveImage}
-            imageFallback={imageFallback}
-          />
-        ))}
-      </div>
+      <CiteResolver.Provider value={onCite ?? null}>
+        <div className="md">
+          {blocks.map((block, index) => (
+            <Block
+              key={index}
+              block={block}
+              resolveImage={resolveImage}
+              imageFallback={imageFallback}
+            />
+          ))}
+        </div>
+      </CiteResolver.Provider>
     </ImageResolver.Provider>
   )
 })
@@ -62,6 +71,7 @@ export const Markdown = memo(function Markdown({
  * need the prop threaded through every call site.
  */
 const ImageResolver = createContext<((src: string) => string | null) | null>(null)
+const CiteResolver = createContext<((path: string, start: number, end: number) => void) | null>(null)
 
 /* --------------------------------- parsing -------------------------------- */
 
@@ -426,6 +436,9 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): ReactNode {
 /** `path/file.py:12-30` — a citation the model wrote inline. */
 const CITE = /(^|[\s(（[`"'])([\w@./\\-]+\.[A-Za-z0-9]{1,8}):L?(\d+)(?:[-–](\d+))?(?=$|[\s),.;:，。；）\]`"'])/g
 
+/** Whole inline-code span that is nothing but a citation, e.g. `src/app.py:1-13`. */
+const INLINE_CITE = /^([\w@./\\-]+\.[A-Za-z0-9]{1,8}):L?(\d+)(?:[-–](\d+))?$/
+
 interface Token {
   type: 'text' | 'code' | 'bold' | 'italic' | 'link' | 'cite' | 'img'
   text: string
@@ -499,10 +512,34 @@ function Inline({ text }: { text: string }): ReactNode {
 function TokenNode({ token }: { token: Token }): ReactNode {
   const { reveal } = useApp()
   const resolveImage = useContext(ImageResolver)
+  const onCite = useContext(CiteResolver)
+
+  const openCite = (path: string, start: number, end: number) => {
+    if (onCite) onCite(path, start, end)
+    else reveal(path, start, end)
+  }
 
   switch (token.type) {
-    case 'code':
+    case 'code': {
+      // A code span that is just `path:line-line` is a citation chip; make it
+      // clickable instead of a dead piece of inline code.
+      const cite = INLINE_CITE.exec(token.text.trim())
+      if (cite) {
+        const start = Number(cite[2])
+        const end = cite[3] ? Number(cite[3]) : start
+        return (
+          <button
+            type="button"
+            className="md-cite"
+            title={`跳转到 ${cite[1]} 第 ${start}-${end} 行`}
+            onClick={() => openCite(cite[1], start, end)}
+          >
+            {token.text}
+          </button>
+        )
+      }
       return <code className="md-inline-code">{token.text}</code>
+    }
     case 'img': {
       // A badge row (`![](shield.svg)` repeated inline) must not break the
       // paragraph, so an unresolvable inline image collapses to its alt text.
@@ -526,7 +563,11 @@ function TokenNode({ token }: { token: Token }): ReactNode {
           type="button"
           className="md-cite"
           title={`跳转到 ${token.path} 第 ${token.start}-${token.end} 行`}
-          onClick={() => reveal(token.path ?? '', token.start, token.end)}
+          onClick={() =>
+            onCite
+              ? onCite(token.path ?? '', token.start ?? 1, token.end ?? token.start ?? 1)
+              : reveal(token.path ?? '', token.start, token.end)
+          }
         >
           {token.text}
         </button>

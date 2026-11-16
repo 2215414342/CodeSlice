@@ -169,7 +169,19 @@ function ConversationRow({
   onSelect,
   onDeleted,
 }: ConversationRowProps): ReactNode {
+  const { openNoteView } = useApp()
   const [deleting, setDeleting] = useState(false)
+
+  const openNote = async (event: React.MouseEvent) => {
+    event.stopPropagation()
+    if (conversation.note_id == null) return
+    try {
+      const note = await api.getNote(conversation.note_id)
+      openNoteView(note)
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err))
+    }
+  }
 
   const remove = async (event: React.MouseEvent) => {
     event.stopPropagation()
@@ -221,7 +233,17 @@ function ConversationRow({
         <div className="title">{conversation.title}</div>
         <div className="sub">
           {parts.join(' · ')}
-          {conversation.has_note ? (
+          {conversation.has_note && conversation.note_id != null ? (
+            <button
+              type="button"
+              className="note-dot"
+              title="打开已有笔记"
+              aria-label={`打开对话「${conversation.title}」的笔记`}
+              onClick={openNote}
+            >
+              <Icon name="notes" size={10} />
+            </button>
+          ) : conversation.has_note ? (
             <span className="note-dot" title="已有笔记">
               <Icon name="notes" size={10} />
             </span>

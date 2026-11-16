@@ -12,14 +12,20 @@ import { Icon } from './Icon'
 
 /** File tree + git badge + index progress + project search for one project. */
 export function FilePanel(): ReactNode {
-  const { project, reveal, refreshKey, focusNote, bumpRefresh, openGraph } = useApp()
+  const { project, reveal, refreshKey, focusNote, bumpRefresh, openGraph, revision } = useApp()
   const projectId = project?.id ?? null
   const index = useIndexJob(projectId, () => bumpRefresh())
+  /** Non-null means the file tree follows a commit instead of the work tree. */
+  const rev = revision.kind === 'rev' ? revision.sha : null
 
   const tree = useAsync(
     (signal) =>
-      projectId ? api.getTree(projectId, '', 2, signal) : Promise.resolve<TreeNode[]>([]),
-    [projectId, refreshKey],
+      projectId
+        ? rev
+          ? api.getGitTree(projectId, rev, '', 2, signal)
+          : api.getTree(projectId, '', 2, signal)
+        : Promise.resolve<TreeNode[]>([]),
+    [projectId, refreshKey, rev],
     { enabled: projectId !== null },
   )
 
@@ -72,7 +78,8 @@ export function FilePanel(): ReactNode {
     )
   }
 
-  const dirtyPaths = new Set(git.data ? [...git.data.modified, ...git.data.untracked] : [])
+  // A commit has no working-tree state, so nothing is "modified" there.
+  const dirtyPaths = new Set(rev ? [] : git.data ? [...git.data.modified, ...git.data.untracked] : [])
   const job = index.job
   const totals = index.totals
 
@@ -83,6 +90,12 @@ export function FilePanel(): ReactNode {
           <span className="badge mute" title="当前索引里已有的文件 / 片段 / 向量数">
             {totals.files} 文件 · {totals.chunks} 片段
             {totals.vectors > 0 ? ` · ${totals.vectors} 向量` : ''}
+          </span>
+        ) : null}
+        {rev ? (
+          <span className="badge warn" title={`文件树来自提交 ${rev}`}>
+            <Icon name="git-branch" size={10} />
+            历史版本 {rev.slice(0, 7)}
           </span>
         ) : null}
         {git.data ? (

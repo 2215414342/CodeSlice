@@ -433,13 +433,25 @@
   line-height: 15px;
 }
 
-/* Small "has note" marker inline in a conversation subtitle. */
+/* Small "has note" marker inline in a conversation subtitle. Opening the note is
+   a real action, so it is a button and the row underneath must not also select
+   the conversation on the same click. */
 .list-row .sub .note-dot {
   display: inline-flex;
   align-items: center;
   margin-left: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
   color: var(--accent);
   vertical-align: -1px;
+  cursor: pointer;
+}
+
+.list-row .sub .note-dot:hover {
+  color: var(--accent-strong, var(--accent));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 /* -------------------------------- search --------------------------------- */
@@ -716,6 +728,11 @@
 
 .note-item:focus-within .note-head .row-actions {
   opacity: 1;
+}
+
+/* A note written after the commit being viewed: still readable, visibly newer. */
+.note-item.later-version {
+  opacity: 0.6;
 }
 
 .note-move-menu {

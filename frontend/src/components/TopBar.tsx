@@ -4,6 +4,7 @@ import { bridge, isDesktop } from '../bridge'
 import { useApp } from '../state/AppState'
 import { shortenPath } from '../lib/format'
 import { Icon, Logo } from './Icon'
+import { GitVersionPicker } from './GitVersionPicker'
 
 interface TopBarProps {
   onOpenSettings: () => void
@@ -38,6 +39,7 @@ export function TopBar({ onOpenSettings, onOpenWelcome }: TopBarProps): ReactNod
             <span className="name">{project.name}</span>
             <span className="path">{shortenPath(project.path, 34)}</span>
           </div>
+          <GitVersionPicker />
         </>
       ) : null}
 

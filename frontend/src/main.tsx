@@ -10,6 +10,7 @@ import './styles/sidebar.css'
 import './styles/editor.css'
 import './styles/doc.css'
 import './styles/tabs.css'
+import './styles/scm.css'
 import './styles/chat.css'
 import './styles/note.css'
 /* vis-network ships its own tooltip/navigation CSS; the graph view renders no

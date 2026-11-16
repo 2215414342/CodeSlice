@@ -15,8 +15,8 @@ import { Icon } from '../Icon'
  * The answer streams token by token; a hub explanation can take a while and the
  * reader should see the model working rather than a blank box.
  */
-export function RelationshipSummary({ scope, projectId, nodeId, neighborCount }: {
-  scope: 'code' | 'notes'; projectId: number; nodeId: string; neighborCount: number
+export function RelationshipSummary({ scope, projectId, nodeId, neighborCount, rev }: {
+  scope: 'code' | 'notes'; projectId: number; nodeId: string; neighborCount: number; rev?: string | null
 }) {
   const [text, setText] = useState('')
   const [result, setResult] = useState<GraphSummary | null>(null)
@@ -46,7 +46,7 @@ export function RelationshipSummary({ scope, projectId, nodeId, neighborCount }:
     let gotDone = false
     let failed = false
     try {
-      for await (const event of api.streamGraphSummary(scope, projectId, nodeId, controller.signal)) {
+      for await (const event of api.streamGraphSummary(scope, projectId, nodeId, controller.signal, rev)) {
         if (controller.signal.aborted) break
         if (event.type === 'delta') {
           setText(current => current + event.text)
