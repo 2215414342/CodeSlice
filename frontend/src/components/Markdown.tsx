@@ -436,6 +436,9 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): ReactNode {
 /** `path/file.py:12-30` — a citation the model wrote inline. */
 const CITE = /(^|[\s(（[`"'])([\w@./\\-]+\.[A-Za-z0-9]{1,8}):L?(\d+)(?:[-–](\d+))?(?=$|[\s),.;:，。；）\]`"'])/g
 
+/** Whole inline-code span that is nothing but a citation, e.g. `src/app.py:1-13`. */
+const INLINE_CITE = /^([\w@./\\-]+\.[A-Za-z0-9]{1,8}):L?(\d+)(?:[-–](\d+))?$/
+
 interface Token {
   type: 'text' | 'code' | 'bold' | 'italic' | 'link' | 'cite' | 'img'
   text: string
@@ -511,9 +514,32 @@ function TokenNode({ token }: { token: Token }): ReactNode {
   const resolveImage = useContext(ImageResolver)
   const onCite = useContext(CiteResolver)
 
+  const openCite = (path: string, start: number, end: number) => {
+    if (onCite) onCite(path, start, end)
+    else reveal(path, start, end)
+  }
+
   switch (token.type) {
-    case 'code':
+    case 'code': {
+      // A code span that is just `path:line-line` is a citation chip; make it
+      // clickable instead of a dead piece of inline code.
+      const cite = INLINE_CITE.exec(token.text.trim())
+      if (cite) {
+        const start = Number(cite[2])
+        const end = cite[3] ? Number(cite[3]) : start
+        return (
+          <button
+            type="button"
+            className="md-cite"
+            title={`跳转到 ${cite[1]} 第 ${start}-${end} 行`}
+            onClick={() => openCite(cite[1], start, end)}
+          >
+            {token.text}
+          </button>
+        )
+      }
       return <code className="md-inline-code">{token.text}</code>
+    }
     case 'img': {
       // A badge row (`![](shield.svg)` repeated inline) must not break the
       // paragraph, so an unresolvable inline image collapses to its alt text.
