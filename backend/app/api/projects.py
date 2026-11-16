@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.core.errors import InvalidInput, NotFound
 from app.indexing.indexer import clear_index, start_index_job, stop_project_watcher, watch_project
 from app.indexing.languages import detect_language
-from app.services import git_service, paths
+from app.services import git_service, paths, revisions, scm
 from app.storage import repo
 
 router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[])
@@ -238,6 +238,104 @@ def git_status(project: ProjectDep, _: TokenDep) -> dict[str, Any]:
             "modified": [],
             "untracked": [],
         }
+
+
+@router.get("/{project_id}/git/branches")
+def git_branches(project: ProjectDep, _: TokenDep) -> dict[str, Any]:
+    """Branches, remote branches and tags — the entries of the version switcher."""
+    root = paths.resolve_root(project["path"])
+    return git_service.refs(root)
+
+
+@router.get("/{project_id}/git/rev")
+def git_rev(project: ProjectDep, _: TokenDep, ref: str = Query(min_length=1)) -> dict[str, Any]:
+    """Pin a ref to the exact commit it points at *now*.
+
+    The UI keeps the sha, not the branch name: a branch that advances later must
+    not silently change what the user is reading.
+    """
+    root = paths.resolve_root(project["path"])
+    resolved = revisions.resolve(root, ref)
+    if resolved is None:
+        raise NotFound(f"unknown revision: {ref}")
+    return resolved
+
+
+@router.get("/{project_id}/git/commits")
+def git_commits(
+    project: ProjectDep,
+    _: TokenDep,
+    limit: int = Query(default=30, ge=1, le=100),
+    skip: int = Query(default=0, ge=0, le=5000),
+    path: str = Query(default=""),
+) -> dict[str, Any]:
+    root = paths.resolve_root(project["path"])
+    return git_service.log(root, limit=limit, skip=skip, rel_path=path or None)
+
+
+@router.get("/{project_id}/git/tree")
+def git_tree(
+    project: ProjectDep,
+    _: TokenDep,
+    rev: str = Query(min_length=1),
+    path: str = Query(default=""),
+    depth: int = Query(default=2, ge=0, le=4),
+) -> list[dict[str, Any]]:
+    root = paths.resolve_root(project["path"])
+    try:
+        return revisions.list_tree(root, rev, path, depth)
+    except revisions.RevisionTooLarge as exc:
+        raise InvalidInput(str(exc)) from None
+    except revisions.RevisionError as exc:
+        raise NotFound(str(exc)) from None
+
+
+@router.get("/{project_id}/git/file")
+def git_file(
+    project: ProjectDep,
+    _: TokenDep,
+    rev: str = Query(min_length=1),
+    path: str = Query(min_length=1),
+) -> dict[str, Any]:
+    """One file as it existed at ``rev`` (read-only; nothing is written back)."""
+    root = paths.resolve_root(project["path"])
+    try:
+        return revisions.read_file(root, rev, path)
+    except revisions.RevisionTooLarge as exc:
+        raise InvalidInput(str(exc)) from None
+    except revisions.RevisionError as exc:
+        raise NotFound(str(exc)) from None
+
+
+@router.get("/{project_id}/git/changes")
+def git_changes(
+    project: ProjectDep,
+    _: TokenDep,
+    rev: str = Query(default=""),
+) -> dict[str, Any]:
+    """Read-only change set: a commit vs its parent, or the work tree vs HEAD."""
+    root = paths.resolve_root(project["path"])
+    try:
+        return scm.changes(root, rev or None)
+    except git_service.GitError as exc:
+        raise NotFound(str(exc)) from None
+
+
+@router.get("/{project_id}/git/pair")
+def git_pair(
+    project: ProjectDep,
+    _: TokenDep,
+    path: str = Query(min_length=1),
+    rev: str = Query(default=""),
+) -> dict[str, Any]:
+    """Both sides of one file for the diff editor (old buffer and new buffer)."""
+    root = paths.resolve_root(project["path"])
+    try:
+        return scm.file_pair(root, rev or None, path)
+    except git_service.GitOutputLimit as exc:
+        raise InvalidInput(str(exc)) from None
+    except git_service.GitError as exc:
+        raise NotFound(str(exc)) from None
 
 
 @router.get("/{project_id}/git/diff")

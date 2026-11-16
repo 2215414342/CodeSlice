@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.api.deps import ProjectDep, TokenDep
 from app.core.errors import NotFound
-from app.services import anchors, notegen, notes_export, notes_index
+from app.services import anchors, note_versions, notegen, notes_export, notes_index, paths, revisions
 from app.storage import repo
 
 router = APIRouter(tags=["notes"])
@@ -119,12 +119,25 @@ def _index_note(note: dict[str, Any]) -> dict[str, Any]:
     return {**note, "indexed": indexed}
 
 
+def _scope(project_id: int, rev: str) -> tuple[Any, str]:
+    """``(root, full sha)`` for a revision request; an unknown ref is a 404."""
+    project = repo.get_project(project_id)
+    if project is None:
+        raise NotFound("project not found")
+    root = paths.resolve_root(project["path"])
+    resolved = revisions.resolve(root, rev)
+    if resolved is None:
+        raise NotFound(f"unknown revision: {rev}")
+    return root, str(resolved["sha"])
+
+
 @router.get("/notes")
 def list_notes(
     _: TokenDep,
     project_id: int | None = None,
     folder_id: int | None = None,
     unfiled: bool = False,
+    rev: str = "",
 ) -> list[dict[str, Any]]:
     """List notes in the knowledge base.
 
@@ -132,6 +145,10 @@ def list_notes(
     as useful in the next repo as it was in the one that produced it. Passing
     ``project_id`` keeps the old per-project behaviour for the panel's project
     filter. ``folder_id`` / ``unfiled`` narrow to one place in the folder tree.
+
+    ``rev`` annotates each note with whether it already existed at that commit.
+    Nothing is filtered out: a later note is still shown (the panel dims it), so
+    browsing history never looks like the knowledge base lost content.
     """
     if project_id is None:
         notes = repo.list_all_notes(folder_id=folder_id, unfiled=unfiled)
@@ -139,16 +156,53 @@ def list_notes(
         notes = [
             note for note in repo.list_notes(project_id) if (folder_id is None or note.get("folder_id") == folder_id)
         ]
-    return _with_index_state(notes)
+    notes = _with_index_state(notes)
+    if not rev:
+        return notes
+    # Notes span projects; each needs its own repository to answer ancestry.
+    roots: dict[int, Any] = {}
+    shas: dict[int, str] = {}
+    out: list[dict[str, Any]] = []
+    for note in notes:
+        pid = int(note["project_id"])
+        if pid not in roots:
+            project = repo.get_project(pid)
+            roots[pid] = paths.resolve_root(project["path"]) if project else None
+            if roots[pid] is not None:
+                resolved = revisions.resolve(roots[pid], rev)
+                if resolved is not None:
+                    shas[pid] = str(resolved["sha"])
+        root = roots[pid]
+        if root is None or pid not in shas:
+            out.append({**note, "visible_at_rev": True, "note_state": "unknown"})
+            continue
+        out.extend(note_versions.annotate_visibility(root, [note], shas[pid]))
+    return out
 
 
 @router.get("/notes/{note_id}")
-def get_note(note_id: int, _: TokenDep) -> dict[str, Any]:
-    """One note with its index state — the reader pane reloads through this."""
+def get_note(note_id: int, _: TokenDep, rev: str = "") -> dict[str, Any]:
+    """One note with its index state — the reader pane reloads through this.
+
+    With ``rev`` the note's references are re-resolved against that commit and
+    the note is marked as already existing or written later.
+    """
     note = repo.get_note(note_id)
     if note is None:
         raise NotFound("note not found")
-    return _with_index_state([note], int(note["project_id"]))[0]
+    payload = _with_index_state([note], int(note["project_id"]))[0]
+    # The reader shows which revision the note was written from and whether each
+    # quoted range still points at the same content. Both live beside the note
+    # rather than inside the Markdown, so the body stays human-readable.
+    refs = repo.list_note_refs(note_id)
+    if rev:
+        root, sha = _scope(int(note["project_id"]), rev)
+        payload = note_versions.annotate_visibility(root, [payload], sha)[0]
+        payload["scope_rev"] = sha
+        payload["refs"] = note_versions.resolve_refs(root, refs, sha)
+        return payload
+    payload["refs"] = refs
+    return payload
 
 
 @router.post("/notes/{note_id}/retitle")

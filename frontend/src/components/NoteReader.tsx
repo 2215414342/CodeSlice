@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import * as api from '../api'
-import type { NoteFolder } from '../types'
+import type { NoteFolder, NoteRef } from '../types'
 import { formatRelative } from '../lib/format'
 import { useApp } from '../state/AppState'
 import { ErrorNote } from './Feedback'
@@ -18,15 +18,43 @@ import { Markdown } from './Markdown'
  * back into the editor.
  */
 export function NoteReader(): ReactNode {
-  const { noteView, openNoteView, bumpRefresh, setActiveConversationId, refreshKey } = useApp()
+  const {
+    noteView,
+    openNoteView,
+    bumpRefresh,
+    setActiveConversationId,
+    refreshKey,
+    revision,
+    openRefDiff,
+  } = useApp()
   const [draft, setDraft] = useState<{ title: string; fileName: string; content: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<'retitle' | 'export' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [folders, setFolders] = useState<NoteFolder[]>([])
+  /** The same note, re-fetched with this commit's reference resolution. */
+  const [scoped, setScoped] = useState<typeof noteView>(null)
 
-  const note = noteView
+  const rev = revision.kind === 'rev' ? revision.sha : null
+  const note = scoped && scoped.id === noteView?.id ? scoped : noteView
+
+  useEffect(() => {
+    if (!noteView || !rev) {
+      setScoped(null)
+      return
+    }
+    const controller = new AbortController()
+    api
+      .getNote(noteView.id, controller.signal, rev)
+      .then((fresh) => {
+        if (!controller.signal.aborted) setScoped(fresh)
+      })
+      .catch(() => {
+        /* the tab still holds the unscoped note; the badges simply stay off */
+      })
+    return () => controller.abort()
+  }, [noteView?.id, rev, refreshKey])
 
   // Leaving one note and opening another must not carry the old draft over.
   useEffect(() => {
@@ -173,6 +201,22 @@ export function NoteReader(): ReactNode {
             </span>
           )}
           <span className="muted">{formatRelative(note.updated_at)}</span>
+          {note.base_commit ? (
+            <span className="badge mute" title={`写于提交 ${note.base_commit}`}>
+              @{note.base_commit.slice(0, 7)}
+              {note.base_dirty ? '（当时有未提交改动）' : ''}
+            </span>
+          ) : (
+            <span className="badge mute" title="这条笔记没有记录生成时的提交">未记录版本</span>
+          )}
+          {rev && note.note_state === 'later' ? (
+            <span className="badge warn" title={`这条笔记写于 ${rev.slice(0, 7)} 之后`}>
+              此后新增
+            </span>
+          ) : null}
+          {rev && note.note_state === 'existing' ? (
+            <span className="badge ok" title="这条笔记在查看的版本里已经存在">当时已存在</span>
+          ) : null}
         </div>
 
         <div className="note-reader-actions">
@@ -239,6 +283,41 @@ export function NoteReader(): ReactNode {
         </div>
       ) : null}
 
+      {note.refs && note.refs.length > 0 ? (
+        <div className="note-refs">
+          <div className="note-refs-head">
+            <Icon name="git-branch" size={12} />
+            <span>{note.refs.length} 处代码引用</span>
+            <span className="muted">{rev ? '按笔记写作时的提交解析' : '点击可跳到源代码管理中的对应变更'}</span>
+          </div>
+          <div className="note-ref-list">
+            {note.refs.map((ref) => {
+              const sha = ref.resolved_commit || ref.commit_sha
+              const start = ref.resolved_start_line ?? ref.start_line
+              const end = ref.resolved_end_line ?? ref.end_line
+              return (
+                <button
+                  key={ref.id}
+                  type="button"
+                  className={`note-ref-row${ref.status === 'modified' ? ' changed' : ''}`}
+                  title={`${ref.path}:${start}-${end}${sha ? ` @ ${sha.slice(0, 7)}` : ''}`}
+                  onClick={() => openRefDiff(sha ?? rev, ref.path, { start, end })}
+                >
+                  <span className={`ref-status ${ref.status}`}>{REF_STATUS_LABEL[ref.status] ?? ref.status}</span>
+                  <span className="note-ref-path">
+                    {ref.path}
+                    <span className="muted">:{start}–{end}</span>
+                    {ref.symbol ? <span className="note-ref-symbol">{ref.symbol}</span> : null}
+                  </span>
+                  {sha ? <span className="scm-sha">{sha.slice(0, 7)}</span> : <span className="muted">工作区</span>}
+                </button>
+              )
+            })}
+          </div>
+          {refSummary(note.refs) ? <div className="note-refs-summary muted">{refSummary(note.refs)}</div> : null}
+        </div>
+      ) : null}
+
       {editing ? (
         <div className="note-reader-edit">
           <input
@@ -289,4 +368,28 @@ export function NoteReader(): ReactNode {
 /** The saved body repeats the title as an `# H1`; the reader shows it in its bar. */
 function stripTitleLine(content: string): string {
   return content.replace(/^#\s+.*(\r?\n)+/, '').trim() || content.trim()
+}
+
+/** One sentence for the revision banner: how many quoted ranges still match. */
+const REF_STATUS_LABEL: Record<NoteRef['status'], string> = {
+  unchanged: '一致',
+  moved: '移动',
+  modified: '改动',
+  deleted: '删除',
+  historical: '历史',
+}
+
+function refSummary(refs: NoteRef[]): string {
+  const counts = refs.reduce<Record<string, number>>((acc, ref) => {
+    acc[ref.status] = (acc[ref.status] ?? 0) + 1
+    return acc
+  }, {})
+  const parts = [
+    counts.unchanged ? `${counts.unchanged} 处一致` : '',
+    counts.moved ? `${counts.moved} 处已搬家` : '',
+    counts.historical ? `${counts.historical} 处可在旧提交回溯` : '',
+    counts.modified ? `${counts.modified} 处内容已改` : '',
+    counts.deleted ? `${counts.deleted} 处文件已不存在` : '',
+  ].filter(Boolean)
+  return `此版本中的引用：${parts.join(' · ') || '无记录'}`
 }

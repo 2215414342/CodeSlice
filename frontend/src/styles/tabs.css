@@ -221,3 +221,122 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* ---------------------------- revision picker ---------------------------- */
+
+.revision-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.revision-trigger {
+  gap: 5px;
+  max-width: 200px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.revision-trigger.active {
+  color: var(--warn, #d68b3c);
+}
+
+.revision-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: var(--z-popover);
+  display: flex;
+  flex-direction: column;
+  width: 272px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-pop);
+}
+
+.revision-group {
+  padding: 8px 9px 4px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+.revision-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.revision-item:hover {
+  background: var(--bg-active);
+}
+
+.revision-item.current {
+  color: var(--accent, #4c8dd6);
+}
+
+.revision-main {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.revision-main.commit-subject {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.revision-sub {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.revision-note {
+  padding: 6px 9px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.revision-note.error {
+  color: var(--danger, #d66);
+}
+
+.revision-sha {
+  display: flex;
+  gap: 6px;
+  padding: 8px 6px 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.revision-sha input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input, var(--bg-panel));
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+.tab-rev {
+  padding: 0 4px;
+  font-size: 9.5px;
+  line-height: 14px;
+}

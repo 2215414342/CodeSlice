@@ -1,15 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { Citation, Note, Project } from '../types'
+import type { Citation, Note, Project, RevisionScope } from '../types'
 import { usePersistedState } from '../hooks/useAsync'
 
 export type AppTheme = 'dark' | 'light'
 
 /** Sidebar views, shared so a code card can jump to the notes panel. */
-export type SidebarTab = 'files' | 'chats' | 'notes'
+export type SidebarTab = 'files' | 'chats' | 'notes' | 'scm'
 
 /** Runtime list of the valid tab ids, used to validate the persisted value. */
-const SIDEBAR_TABS: SidebarTab[] = ['files', 'chats', 'notes']
+const SIDEBAR_TABS: SidebarTab[] = ['files', 'chats', 'notes', 'scm']
 
 /** A request to reveal + highlight a line range in the editor. */
 export interface RevealTarget extends Citation {
@@ -27,6 +27,8 @@ export interface OpenFileState {
   path: string
   /** Line range to highlight (1-based, inclusive). */
   highlight: { start: number; end: number } | null
+  /** The commit being viewed; absent means the work tree. */
+  rev?: string
 }
 
 /**
@@ -38,7 +40,7 @@ export interface OpenFileState {
  * reader without a refetch.
  */
 export type EditorTab =
-  | { kind: 'file'; path: string; highlight: { start: number; end: number } | null }
+  | { kind: 'file'; path: string; highlight: { start: number; end: number } | null; rev?: string }
   | { kind: 'note'; note: Note }
   /**
    * A project-wide graph. Both graphs are single-instance: two code-graph tabs
@@ -50,6 +52,26 @@ export type EditorTab =
    */
   | { kind: 'graph'; scope: 'code'; focusNodeId: string | null; focusNonce?: number }
   | { kind: 'graph'; scope: 'notes'; focusNodeId: null }
+  /**
+   * A read-only two-sided diff. `rev` pins the new side to a commit; absent means
+   * "work tree against HEAD". Diff tabs are snapshots: switching scope closes
+   * them rather than silently retargeting them.
+   */
+  | {
+      kind: 'diff'
+      path: string
+      rev?: string
+      highlight: { start: number; end: number } | null
+    }
+
+/** What the source-control panel should expand/highlight after a jump. */
+export interface ScmFocus {
+  rev: string | null
+  path: string | null
+  highlight: { start: number; end: number } | null
+  nonce: number
+  source: 'note' | 'timeline' | 'file'
+}
 
 /** A node the user asked the agent about from a graph view. */
 export interface GraphAsk {
@@ -65,6 +87,7 @@ export interface NavHistoryEntry {
   path: string
   start_line: number
   end_line: number
+  rev?: string
 }
 
 /** A reading session should not grow an unbounded list of jump targets. */
@@ -178,6 +201,32 @@ interface AppState {
   clearGraphAsk: () => void
   theme: AppTheme
   setTheme: (theme: AppTheme) => void
+  /**
+   * The scope every panel reads from: the work tree, or one pinned commit.
+   *
+   * A branch is only an entry point — switching to it resolves its tip to a full
+   * sha immediately, so a branch that advances later cannot change what is on
+   * screen without the user asking.
+   */
+  revision: RevisionScope
+  setRevision: (scope: RevisionScope) => void
+  /** The diff tab currently active, or null when another tab is in front. */
+  activeDiff: Extract<EditorTab, { kind: 'diff' }> | null
+  /** What the source-control panel should reveal; cleared once consumed. */
+  scmFocus: ScmFocus | null
+  /** Open the source-control sidebar and point it at one commit/file. */
+  focusScm: (rev: string | null, path?: string | null, highlight?: { start: number; end: number } | null) => void
+  /** Open a read-only diff tab (work tree when `rev` is omitted). */
+  openDiff: (path: string, rev?: string, highlight?: { start: number; end: number } | null) => void
+  /**
+   * Jump from a note reference: switch to the commit the reference belongs to,
+   * reveal that commit/file in source control, and open its diff.
+   */
+  openRefDiff: (
+    rev: string | null,
+    path: string,
+    highlight?: { start: number; end: number } | null,
+  ) => void
 }
 
 const AppContext = createContext<AppState | null>(null)
@@ -204,6 +253,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   const [focusNoteId, setFocusNoteId] = useState<number | null>(null)
   const [navHistory, setNavHistory] = useState<NavHistoryEntry[]>([])
   const [navIndex, setNavIndex] = useState(-1)
+  const [revision, setRevisionState] = useState<RevisionScope>({ kind: 'worktree' })
+  const [scmFocus, setScmFocus] = useState<ScmFocus | null>(null)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -221,6 +272,8 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
           setCitationHighlight(null)
           setNavHistory([])
           setNavIndex(-1)
+          setRevisionState({ kind: 'worktree' })
+          setScmFocus(null)
         }
         return next
       })
@@ -237,18 +290,26 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
    */
   const [citationHighlight, setCitationHighlight] = useState<RevealTarget | null>(null)
 
+  const revOf = useCallback(
+    (scope: RevisionScope): string | undefined => (scope.kind === 'rev' ? scope.sha : undefined),
+    [],
+  )
+  const currentRev = revOf(revision)
+
   const openFileTab = useCallback(
-    (path: string, highlight: { start: number; end: number } | null) => {
+    (path: string, highlight: { start: number; end: number } | null, rev?: string) => {
       setTabs((prev) => {
-        const existing = prev.findIndex((tab) => tab.kind === 'file' && tab.path === path)
+        const existing = prev.findIndex(
+          (tab) => tab.kind === 'file' && tab.path === path && (tab.rev ?? '') === (rev ?? ''),
+        )
         if (existing >= 0) {
           const next = [...prev]
-          next[existing] = { kind: 'file', path, highlight }
+          next[existing] = { kind: 'file', path, highlight, rev }
           setActiveTabIndex(existing)
           return next
         }
         setActiveTabIndex(prev.length)
-        return [...prev, { kind: 'file', path, highlight }]
+        return [...prev, { kind: 'file', path, highlight, rev }]
       })
     },
     [],
@@ -261,13 +322,13 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       // every plain open produced a "引用第 1–1 行" bar, because the missing
       // range defaulted to line 1.
       if (!hasRange) {
-        openFileTab(path, null)
+        openFileTab(path, null, currentRev)
         setCitationHighlight(null)
         return
       }
       const from = start && start > 0 ? start : 1
       const to = end && end >= from ? end : from
-      openFileTab(path, { start: from, end: to })
+      openFileTab(path, { start: from, end: to }, currentRev)
       setCitationHighlight((prev) => {
         const same = prev && prev.path === path && prev.start_line === from && prev.end_line === to
         // Second click on the same chip is a request to drop the highlight again.
@@ -276,14 +337,87 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
           : { path, start_line: from, end_line: to, symbol: null, nonce: 0, source: 'citation' }
       })
     },
-    [openFileTab],
+    [openFileTab, currentRev],
   )
 
   const clearCitation = useCallback(() => setCitationHighlight(null), [])
 
+  /**
+   * Switch the whole app to a revision (or back to the work tree).
+   *
+   * File tabs are dropped rather than rewritten: their line numbers, highlights
+   * and unsaved drafts belong to the scope they were opened in, and carrying
+   * them across would make the editor claim the wrong lines. Note and graph
+   * tabs survive — the notes are the user's, not the revision's.
+   */
+  const setRevision = useCallback((scope: RevisionScope) => {
+    setRevisionState((prev) => {
+      const same =
+        prev.kind === 'worktree' && scope.kind === 'worktree'
+          ? true
+          : prev.kind === 'rev' && scope.kind === 'rev' && prev.sha === scope.sha
+      return same ? prev : scope
+    })
+    setTabs((prev) => {
+      // File and diff tabs are snapshots of the scope they were opened in. Note
+      // and graph tabs survive: the notes are the user's, not the revision's.
+      const remaining = prev.filter((tab) => tab.kind !== 'file' && tab.kind !== 'diff')
+      setActiveTabIndex((current) => Math.max(0, Math.min(current, Math.max(0, remaining.length - 1))))
+      return remaining
+    })
+    setCitationHighlight(null)
+    setNavHistory([])
+    setNavIndex(-1)
+  }, [])
+
+  /** Open a read-only diff tab, reusing the one for the same path and scope. */
+  const openDiff = useCallback(
+    (path: string, rev?: string, highlight?: { start: number; end: number } | null) => {
+      const range = highlight && highlight.start > 0 ? highlight : null
+      setTabs((prev) => {
+        const index = prev.findIndex(
+          (tab) => tab.kind === 'diff' && tab.path === path && (tab.rev ?? '') === (rev ?? ''),
+        )
+        if (index >= 0) {
+          const next = [...prev]
+          next[index] = { kind: 'diff', path, rev, highlight: range }
+          setActiveTabIndex(index)
+          return next
+        }
+        setActiveTabIndex(prev.length)
+        return [...prev, { kind: 'diff', path, rev, highlight: range }]
+      })
+    },
+    [],
+  )
+
+  const focusScm = useCallback(
+    (rev: string | null, path: string | null = null, highlight: { start: number; end: number } | null = null) => {
+      setSidebarTabState('scm')
+      setScmFocus({ rev, path, highlight, nonce: Date.now(), source: 'file' })
+    },
+    [setSidebarTabState],
+  )
+
+  /**
+   * A note ref jump is allowed to change the revision: the reference belongs to
+   * the commit the note was written against, so showing the work tree's diff
+   * would answer a different question.
+   */
+  const openRefDiff = useCallback(
+    (rev: string | null, path: string, highlight?: { start: number; end: number } | null) => {
+      setRevision(rev ? { kind: 'rev', sha: rev, shaShort: rev.slice(0, 7) } : { kind: 'worktree' })
+      const range = highlight && highlight.start > 0 ? highlight : null
+      setSidebarTabState('scm')
+      setScmFocus({ rev, path, highlight: range, nonce: Date.now(), source: 'note' })
+      openDiff(path, rev ?? undefined, range)
+    },
+    [openDiff, setRevision, setSidebarTabState],
+  )
+
   const showNavEntry = useCallback(
     (entry: NavHistoryEntry) => {
-      openFileTab(entry.path, { start: entry.start_line, end: entry.end_line })
+      openFileTab(entry.path, { start: entry.start_line, end: entry.end_line }, entry.rev)
       setCitationHighlight({
         path: entry.path,
         start_line: entry.start_line,
@@ -302,12 +436,12 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     (path: string, start?: number, end?: number) => {
       const from = start && start > 0 ? start : 1
       const to = end && end >= from ? end : from
-      const entry = { path, start_line: from, end_line: to }
+      const entry = { path, start_line: from, end_line: to, rev: currentRev }
       showNavEntry(entry)
       setNavHistory((prev) => {
         const base = navIndex >= 0 ? prev.slice(0, navIndex + 1) : []
         const last = base[base.length - 1]
-        if (last && last.path === path && last.start_line === from && last.end_line === to) {
+        if (last && last.path === path && last.start_line === from && last.end_line === to && last.rev === currentRev) {
           setNavIndex(base.length - 1)
           return base
         }
@@ -316,7 +450,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         return next
       })
     },
-    [navIndex, showNavEntry],
+    [navIndex, showNavEntry, currentRev],
   )
 
   const goBack = useCallback(() => {
@@ -463,7 +597,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   const openFile = useMemo<OpenFileState | null>(
     () =>
       activeTab && activeTab.kind === 'file'
-        ? { path: activeTab.path, highlight: activeTab.highlight }
+        ? { path: activeTab.path, highlight: activeTab.highlight, rev: activeTab.rev }
         : null,
     [activeTab],
   )
@@ -519,6 +653,11 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   const askAboutNode = useCallback((ask: GraphAsk) => setGraphAsk(ask), [])
   const clearGraphAsk = useCallback(() => setGraphAsk(null), [])
 
+  const activeDiff =
+    tabs[activeTabIndex] && tabs[activeTabIndex].kind === 'diff'
+      ? (tabs[activeTabIndex] as Extract<EditorTab, { kind: 'diff' }>)
+      : null
+
   const value = useMemo<AppState>(
     () => ({
       project,
@@ -563,6 +702,13 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       clearGraphAsk,
       theme,
       setTheme,
+      revision,
+      setRevision,
+      activeDiff,
+      scmFocus,
+      focusScm,
+      openDiff,
+      openRefDiff,
     }),
     [
       project,
@@ -606,6 +752,13 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       clearGraphAsk,
       theme,
       setTheme,
+      revision,
+      setRevision,
+      activeDiff,
+      scmFocus,
+      focusScm,
+      openDiff,
+      openRefDiff,
     ],
   )
 

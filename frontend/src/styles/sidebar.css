@@ -718,6 +718,11 @@
   opacity: 1;
 }
 
+/* A note written after the commit being viewed: still readable, visibly newer. */
+.note-item.later-version {
+  opacity: 0.6;
+}
+
 .note-move-menu {
   position: absolute;
   z-index: 4;

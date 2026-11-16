@@ -74,11 +74,18 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   } = useApp()
   const projectId = project?.id ?? null
   const path = openFile?.path ?? null
+  /** Set when this tab is a read-only historical file (`git/file?rev=`). */
+  const rev = openFile?.rev ?? null
 
   const file = useAsync(
     (signal) =>
-      projectId !== null && path !== null ? api.getFile(projectId, path, signal) : Promise.resolve(null),
-    [projectId, path],
+      projectId !== null && path !== null
+        ? rev
+          // A revision is immutable: read the blob, never the work tree.
+          ? api.getGitFile(projectId, rev, path, signal)
+          : api.getFile(projectId, path, signal)
+        : Promise.resolve(null),
+    [projectId, path, rev],
     { enabled: projectId !== null && path !== null },
   )
 
@@ -773,13 +780,15 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   // pane down ("change in the order of Hooks").
   const goToDefinitionAt = useCallback(
     async (position: EditorPosition) => {
+      // The symbol index describes the work tree; jumping in a historical file
+      // would land on lines that belong to a different revision.
       if (projectId === null || !path || navBusyRef.current) return
       navBusyRef.current = true
       setNavBusy(true)
       setNavPicker(null)
       setNavNotice(null)
       try {
-        const result = await api.getDefinition(projectId, path, position.lineNumber, position.column)
+        const result = await api.getDefinition(projectId, path, position.lineNumber, position.column, undefined, rev)
         if (result.targets.length === 1) {
           const target = result.targets[0]
           // Frame the declaration line, not the whole body: jumping to a large
@@ -824,7 +833,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         setNavBusy(false)
       }
     },
-    [navigateTo, path, projectId],
+    [navigateTo, path, projectId, rev],
   )
 
   const showReferencesAt = useCallback(
@@ -835,7 +844,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
       setNavPicker(null)
       setNavNotice(null)
       try {
-        const result = await api.getReferences(projectId, path, position.lineNumber, position.column)
+        const result = await api.getReferences(projectId, path, position.lineNumber, position.column, undefined, rev)
         const target = result.target
         if (target && result.locations.length > 0) {
           setNavPicker({
@@ -864,7 +873,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         setNavBusy(false)
       }
     },
-    [path, projectId],
+    [path, projectId, rev],
   )
 
   const pickNavChoice = useCallback(
@@ -894,9 +903,9 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   // The hover provider is global (registered once), so it reads the active
   // project/file from this module-level context.
   useEffect(() => {
-    setNavigationContext(path && projectId !== null ? { projectId, path } : null)
+    setNavigationContext(path && projectId !== null ? { projectId, path, rev } : null)
     return () => setNavigationContext(null)
-  }, [path, projectId])
+  }, [path, projectId, rev])
 
   useEffect(() => {
     clearNavigationHoverCache()
@@ -1021,7 +1030,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
     setCardError(null)
     setGraphLocating(true)
     try {
-      const result = await api.locateGraphNode(projectId, path, target)
+      const result = await api.locateGraphNode(projectId, path, target, undefined, rev)
       if (!result.node) {
         setCardError('当前文件位置不在知识图谱中，请先重建图谱。')
         return
@@ -1043,6 +1052,11 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         </span>
         {content ? (
           <>
+            {rev ? (
+              <span className="tag warn" title={`只读：${rev}`}>
+                历史版本 {rev.slice(0, 7)}
+              </span>
+            ) : null}
             {binary
               ? <span className="tag">二进制</span>
               : <span className="tag accent">{content.language || languageFromPath(path)}</span>}
@@ -1053,7 +1067,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
           </>
         ) : null}
         <span className="spacer" />
-        {isDoc ? (
+        {isDoc && !rev ? (
           <div className="doc-mode" role="group" aria-label="文档显示方式">
             <button
               className={docEditing ? '' : 'active'}
@@ -1077,7 +1091,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
             </button>
           </div>
         ) : null}
-        {isDoc && docEditing ? (
+        {isDoc && docEditing && !rev ? (
           <button
             className="small primary doc-save"
             onClick={() => void saveDoc()}
@@ -1390,8 +1404,8 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
             language={languageFor(content)}
             path={content.path}
             onMountEditor={onMount}
-            readOnly={!docEditing}
-            onChange={docEditing ? updateDocDraft : undefined}
+            readOnly={!docEditing || Boolean(rev)}
+            onChange={docEditing && !rev ? updateDocDraft : undefined}
           />
         ) : null}
         {!file.loading && !content && !file.error ? (

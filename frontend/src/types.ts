@@ -38,10 +38,55 @@ export interface FileContent {
   language: string
   content: string
   size: number
-  mtime: number
+  /** null when the content came from git rather than the work tree. */
+  mtime: number | null
   truncated: boolean
   /** True for images/archives/databases; `content` is empty and Monaco is not mounted. */
   binary: boolean
+  /** Set when this is a historical file (`git/file?rev=`). */
+  rev?: string
+  /** False when the path does not exist at that revision. */
+  exists?: boolean
+}
+
+/** The single scope every panel reads from: the work tree, or one commit. */
+export type RevisionScope =
+  | { kind: 'worktree' }
+  | { kind: 'rev'; sha: string; shaShort: string; name?: string }
+
+export interface GitBranch {
+  name: string
+  sha: string
+  sha_short: string
+  current: boolean
+}
+
+export interface GitBranches {
+  current: string | null
+  detached: boolean
+  branches: GitBranch[]
+  tags: GitBranch[]
+}
+
+export interface GitCommit {
+  sha: string
+  sha_short: string
+  subject: string
+  author: string
+  author_time: string
+  parents: string[]
+}
+
+export interface GitCommitList {
+  commits: GitCommit[]
+  truncated: boolean
+}
+
+export interface GitRevision {
+  sha: string
+  sha_short: string
+  kind: 'branch' | 'tag' | 'commit'
+  name: string
 }
 
 export interface GitStatus {
@@ -52,6 +97,46 @@ export interface GitStatus {
   staged: string[]
   modified: string[]
   untracked: string[]
+}
+
+/** One row in the source-control change list. */
+export interface ScmFile {
+  path: string
+  old_path: string | null
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'conflicted'
+  additions: number
+  deletions: number
+  binary: boolean
+}
+
+/** A commit's change set, or the work tree against HEAD. */
+export interface ScmChanges {
+  kind: 'commit' | 'worktree'
+  rev: string | null
+  sha_short: string
+  base: string | null
+  base_short: string
+  files: ScmFile[]
+  truncated: boolean
+  additions: number
+  deletions: number
+  is_repo?: boolean
+}
+
+/** Both sides of one path, for the diff editor. */
+export interface ScmPair {
+  path: string
+  rev: string | null
+  base: string | null
+  old_label: string
+  new_label: string
+  old_exists: boolean
+  new_exists: boolean
+  old_content: string
+  new_content: string
+  binary: boolean
+  truncated: boolean
+  language: string
 }
 
 export interface GitDiff {
@@ -551,6 +636,30 @@ export interface Note {
    * spans every project, so the panel needs to say where a note came from.
    */
   project_name?: string | null
+  /** The commit the note was generated from; absent for notes written earlier. */
+  base_commit?: string | null
+  base_dirty?: number
+  /** Set only when the API was asked for a revision scope. */
+  visible_at_rev?: boolean
+  note_state?: 'existing' | 'later' | 'unknown'
+  /** Every code range the note quotes, re-resolved for the requested scope. */
+  refs?: NoteRef[]
+}
+
+export interface NoteRef {
+  id: number
+  note_id: number
+  path: string
+  start_line: number
+  end_line: number
+  symbol: string | null
+  commit_sha: string | null
+  snippet: string | null
+  code_hash?: string | null
+  status: 'unchanged' | 'moved' | 'historical' | 'modified' | 'deleted'
+  resolved_commit?: string | null
+  resolved_start_line?: number
+  resolved_end_line?: number
 }
 
 export interface CodeAnnotation {
@@ -581,7 +690,8 @@ export interface NoteFolder {
 export interface GeneratedNote extends Note {
   summary_failed: boolean
   summary_error: string | null
-  refs: number
+  /** How many code ranges the generation recorded (not the ranges themselves). */
+  ref_count?: number
   indexed: boolean
 }
 

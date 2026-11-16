@@ -25,9 +25,9 @@ from pydantic import BaseModel, Field
 from app.api.conversations import SSE_HEADERS
 from app.api.deps import ProjectDep, TokenDep
 from app.core.db import GRAPH_SCOPE_CODE, GRAPH_SCOPE_NOTES, NOTES_GRAPH_PROJECT_ID
-from app.core.errors import AppError, NotFound
-from app.graph import notes, query, relationships, service, store
-from app.services import paths
+from app.core.errors import AppError, InvalidInput, NotFound
+from app.graph import notes, query, relationships, revision_store, service, store
+from app.services import git_service, paths, revisions
 from app.storage import repo
 
 router = APIRouter(tags=["graph"])
@@ -71,9 +71,53 @@ def _layout_payload(graph: dict[str, Any], project_id: int, scope: str) -> dict[
     return {"layout_key": key, "layout": store.load_layout(project_id, scope, key)}
 
 
+def _visible_note_ids(rev: str) -> set[int] | None:
+    """Note ids that already existed at ``rev``; ``None`` means "cannot tell".
+
+    The notes graph spans projects, and ancestry is a per-repository question, so
+    each note's project root is resolved once. A note without a base commit stays
+    visible: it predates version tracking.
+    """
+    hidden: set[int] = set()
+    sha_by_project: dict[int, str | None] = {}
+    for note in repo.list_all_notes():
+        base = note.get("base_commit")
+        if not base:
+            continue
+        pid = int(note["project_id"])
+        if pid not in sha_by_project:
+            project = repo.get_project(pid)
+            root = paths.resolve_root(project["path"]) if project else None
+            resolved = revisions.resolve(root, rev) if root is not None else None
+            sha_by_project[pid] = str(resolved["sha"]) if resolved else None
+        sha = sha_by_project[pid]
+        if sha is None:
+            continue
+        project = repo.get_project(pid)
+        root = paths.resolve_root(project["path"]) if project else None
+        if root is not None and not git_service.is_ancestor(root, str(base), sha):
+            hidden.add(int(note["id"]))
+    return hidden
+
+
 @router.get("/graphs/notes")
-def get_notes_graph(_: TokenDep) -> dict[str, Any]:
+def get_notes_graph(_: TokenDep, rev: str = Query(default="")) -> dict[str, Any]:
     graph = notes.build()
+    if rev:
+        hidden = _visible_note_ids(rev)
+        if hidden:
+            nodes = [
+                node
+                for node in graph.get("nodes") or []
+                if node.get("note_id") is None or int(node["note_id"]) not in hidden
+            ]
+            kept = {node["id"] for node in nodes}
+            edges = [
+                edge
+                for edge in graph.get("edges") or []
+                if edge.get("source") in kept and edge.get("target") in kept
+            ]
+            graph = {**graph, "nodes": nodes, "edges": edges}
     return {**graph, **_layout_payload(graph, NOTES_GRAPH_PROJECT_ID, GRAPH_SCOPE_NOTES)}
 
 
@@ -97,14 +141,34 @@ def summarize_note_stream(body: SummaryRequest, _: TokenDep) -> StreamingRespons
     )
 
 
-def _cached_or_build(project: dict, root) -> dict[str, Any]:
+def _revision_graph(project: dict, rev: str, *, force: bool = False) -> tuple[dict[str, Any], bool]:
+    """A commit's graph, or 404/400 with a readable reason.
+
+    Building is synchronous: a revision graph is built once and then served from
+    one primary-key lookup, and the caps in ``revisions`` keep a pathological
+    commit from stalling the request indefinitely.
+    """
+    root = paths.resolve_root(project["path"])
+    try:
+        return revision_store.get_or_build(project["id"], root, rev, force=force)
+    except revisions.RevisionTooLarge as exc:
+        raise InvalidInput(str(exc)) from None
+    except revisions.RevisionError as exc:
+        raise NotFound(str(exc)) from None
+
+
+def _cached_or_build(project: dict, root, rev: str = "") -> dict[str, Any]:
     """Persisted graph for read-only callers, building only when absent.
 
     Node detail, summary and conversation targets already know which project
     they want; the user has not asked for a refresh, so a stale-by-edges graph is
     still preferable to stalling a click. ``store.ensure_fresh`` is the endpoint
-    that actually opens the graph view and therefore does validate.
+    that actually opens the graph view and therefore does validate. With ``rev``
+    the graph is immutable, so a cached row is always correct.
     """
+    if rev:
+        payload, _ = _revision_graph(project, rev)
+        return payload
     cached = store.load_cached(project["id"], GRAPH_SCOPE_CODE)
     if cached is not None:
         return cached
@@ -113,14 +177,24 @@ def _cached_or_build(project: dict, root) -> dict[str, Any]:
 
 
 @router.post("/projects/{project_id}/graph/summary")
-def summarize_code(project: ProjectDep, body: SummaryRequest, _: TokenDep) -> dict[str, Any]:
-    graph = _cached_or_build(project, paths.resolve_root(project["path"]))
+def summarize_code(
+    project: ProjectDep,
+    body: SummaryRequest,
+    _: TokenDep,
+    rev: str = Query(default=""),
+) -> dict[str, Any]:
+    graph = _cached_or_build(project, paths.resolve_root(project["path"]), rev)
     return relationships.summarize(graph, body.node_id, "code")
 
 
 @router.post("/projects/{project_id}/graph/summary/stream")
-def summarize_code_stream(project: ProjectDep, body: SummaryRequest, _: TokenDep) -> StreamingResponse:
-    graph = _cached_or_build(project, paths.resolve_root(project["path"]))
+def summarize_code_stream(
+    project: ProjectDep,
+    body: SummaryRequest,
+    _: TokenDep,
+    rev: str = Query(default=""),
+) -> StreamingResponse:
+    graph = _cached_or_build(project, paths.resolve_root(project["path"]), rev)
     return StreamingResponse(
         _summary_frames(relationships.summarize_stream(graph, body.node_id, "code")),
         media_type="text/event-stream",
@@ -180,14 +254,28 @@ class GraphBuildResult(BaseModel):
 
 
 @router.get("/projects/{project_id}/graph")
-def get_graph(project: ProjectDep, _: TokenDep) -> dict[str, Any]:
+def get_graph(project: ProjectDep, _: TokenDep, rev: str = Query(default="")) -> dict[str, Any]:
     """The project's knowledge graph, served from the persisted copy.
 
-    This is the one endpoint that validates freshness, because it is the "open
-    the graph" action: if the corpus changed since the last build, the rebuild
-    happens here and ``stats.rebuilt`` says so. Everything else reads the cache.
+    Without ``rev`` this is the work-tree graph, and it is the one endpoint that
+    validates freshness because it is the "open the graph" action. With ``rev``
+    the commit's graph is immutable: a miss builds it once, a hit is one lookup,
+    and ``stats.rebuilt`` still says which happened.
     """
     root = paths.resolve_root(project["path"])
+    if rev:
+        graph, rebuilt = _revision_graph(project, rev)
+        sha = str(graph.get("rev") or rev)
+        scope = revision_store.scope_for(sha)
+        return {
+            "nodes": graph.get("nodes") or [],
+            "edges": graph.get("edges") or [],
+            "communities": graph.get("communities") or [],
+            "stats": {**service.summary(graph), "rebuilt": rebuilt, "source": graph.get("stats", {}).get("source")},
+            "rev": sha,
+            "sha_short": sha[:7],
+            **_layout_payload(graph, project["id"], scope),
+        }
     graph, rebuilt = store.ensure_fresh(project["id"], root)
     return {
         "nodes": graph.get("nodes") or [],
@@ -199,16 +287,33 @@ def get_graph(project: ProjectDep, _: TokenDep) -> dict[str, Any]:
 
 
 @router.put("/projects/{project_id}/graph/layout")
-def save_code_layout(project: ProjectDep, body: GraphLayoutRequest, _: TokenDep) -> dict[str, bool]:
+def save_code_layout(
+    project: ProjectDep,
+    body: GraphLayoutRequest,
+    _: TokenDep,
+    rev: str = Query(default=""),
+) -> dict[str, bool]:
+    if rev:
+        payload, _ = _revision_graph(project, rev)
+        sha = str(payload.get("rev") or rev)
+        store.save_layout(project["id"], revision_store.scope_for(sha), body.layout_key, body.positions)
+        return {"ok": True}
     store.save_layout(project["id"], GRAPH_SCOPE_CODE, body.layout_key, body.positions)
     return {"ok": True}
 
 
 @router.post("/projects/{project_id}/graph/build")
-def rebuild_graph(project: ProjectDep, _: TokenDep) -> GraphBuildResult:
+def rebuild_graph(
+    project: ProjectDep,
+    _: TokenDep,
+    rev: str = Query(default=""),
+) -> GraphBuildResult:
     """Force a rebuild, for when the user changed ignore rules or wants a fresh view."""
     root = paths.resolve_root(project["path"])
-    graph = store.force_rebuild(project["id"], root)
+    if rev:
+        graph, _ = _revision_graph(project, rev, force=True)
+    else:
+        graph = store.force_rebuild(project["id"], root)
     return GraphBuildResult(
         nodes=len(graph.get("nodes") or []),
         edges=len(graph.get("edges") or []),
@@ -261,13 +366,14 @@ def locate_file_position(
     _: TokenDep,
     path: str = Query(min_length=1),
     line: int = Query(default=1, ge=1),
+    rev: str = Query(default=""),
 ) -> dict[str, Any]:
     """Resolve a code position to graph node, for "locate in graph" in the editor.
 
     Served from the persisted copy: this runs while the user is reading code and
     must never walk the source tree. The caller opens the returned node.
     """
-    graph = _cached_or_build(project, paths.resolve_root(project["path"]))
+    graph = _cached_or_build(project, paths.resolve_root(project["path"]), rev)
     return {"node": _location_node(graph, path, line)}
 
 
@@ -277,6 +383,7 @@ def get_node_detail(
     _: TokenDep,
     node_id: str = Query(min_length=1),
     depth: int = Query(default=1, ge=1, le=3),
+    rev: str = Query(default=""),
 ) -> dict[str, Any]:
     """One node plus its immediate connections.
 
@@ -285,7 +392,7 @@ def get_node_detail(
     from the persisted copy — clicking a node never re-walks the source tree.
     """
     root = paths.resolve_root(project["path"])
-    graph = _cached_or_build(project, root)
+    graph = _cached_or_build(project, root, rev)
     nodes = graph.get("nodes") or []
     edges = graph.get("edges") or []
     nodes_by_id = {node["id"]: node for node in nodes}

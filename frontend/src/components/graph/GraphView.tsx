@@ -48,9 +48,12 @@ const MAX_RAIL_PCT = 72
  * the header carries stats, relation filters and the rebuild action only.
  */
 export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Props): ReactNode {
-  const { project, reveal, openNoteView, askAboutNode, refreshKey, theme } = useApp()
+  const { project, reveal, openNoteView, askAboutNode, refreshKey, theme, revision: appRevision } = useApp()
   const projectId = project?.id ?? null
   const cacheKey = graphCacheKey(projectId, scope)
+  /** Non-null means the graph follows a commit (both code and notes views). */
+  const rev = appRevision.kind === 'rev' ? appRevision.sha : null
+  const graphKey = rev ? `${cacheKey}:${rev}` : cacheKey
   const [payload, setPayload] = useState<GraphPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -110,12 +113,12 @@ export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Pro
 
   const adopt = useCallback((data: GraphPayload) => {
     setPayload(data)
-    writeGraphCache(cacheKey, data)
-  }, [cacheKey])
+    writeGraphCache(graphKey, data)
+  }, [graphKey])
 
   useEffect(() => {
     if (projectId === null) return
-    const cached = readGraphCache(cacheKey)
+    const cached = readGraphCache(graphKey)
     if (cached) {
       setPayload(cached.payload)
       setLoading(false)
@@ -127,8 +130,8 @@ export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Pro
     setError(null)
     const controller = new AbortController()
     const request = scope === 'code'
-      ? api.getGraph(projectId, controller.signal)
-      : api.getNotesGraph(controller.signal)
+      ? api.getGraph(projectId, controller.signal, rev)
+      : api.getNotesGraph(controller.signal, rev)
     void request.then(data => {
       if (controller.signal.aborted) return
       adopt(data)
@@ -140,7 +143,7 @@ export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Pro
       setRefreshing(false)
     })
     return () => controller.abort()
-  }, [projectId, scope, revision, refreshKey, cacheKey, adopt])
+  }, [projectId, scope, revision, refreshKey, graphKey, adopt, rev])
 
   const byId = useMemo(() => new Map(payload?.nodes.map(node => [node.id, node]) ?? []), [payload])
   const view = useMemo(
@@ -258,8 +261,8 @@ export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Pro
     setRebuilding(true)
     setError(null)
     try {
-      if (scope === 'code') await api.rebuildGraph(projectId)
-      clearGraphCache(cacheKey)
+      if (scope === 'code') await api.rebuildGraph(projectId, rev)
+      clearGraphCache(graphKey)
       setRevision(revisionValue => revisionValue + 1)
     } catch (err) { setError(err instanceof Error ? err.message : String(err)) }
     finally { setRebuilding(false) }
@@ -271,12 +274,15 @@ export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Pro
 
   const graphTheme: GraphTheme = theme
   const layoutKey = payload
-    ? `${cacheKey}:${payload.layout_key ?? `legacy:${payload.nodes.length}:${payload.edges.length}`}`
-    : cacheKey
+    ? `${graphKey}:${payload.layout_key ?? `legacy:${payload.nodes.length}:${payload.edges.length}`}`
+    : graphKey
   const communities = payload?.communities ?? []
 
   return <div className="graph-view" data-graph-scope={scope}>
     <header className="graph-head">
+      {rev ? (
+        <span className="tag warn" title={`图谱来自提交 ${rev}`}>历史版本 {rev.slice(0, 7)}</span>
+      ) : null}
       <div className="graph-head-stats" aria-label="图谱规模">
         <span className="graph-stat"><b>{visibleCount.toLocaleString('zh-CN')}</b><span>可见节点</span></span>
         <span className="graph-stat"><b>{visibleEdgeCount.toLocaleString('zh-CN')}</b><span>关系</span></span>
@@ -311,7 +317,7 @@ export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Pro
             initialPositions={payload.layout}
             onSettled={positions => {
               if (!payload.layout_key) return
-              void api.saveGraphLayout(scope, projectId, payload.layout_key, positions).catch(() => {
+              void api.saveGraphLayout(scope, projectId, payload.layout_key, positions, rev).catch(() => {
                 /* layout persistence is best effort; the in-memory cache still works */
               })
             }}
@@ -397,6 +403,7 @@ export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Pro
           theme={graphTheme}
           projectId={projectId}
           revision={revision}
+          rev={rev}
           onBack={() => { setSelectedId(null); setFocus(null) }}
           onSelect={id => choose(id, false)}
           onOpen={node => void openNode(node)}
@@ -418,7 +425,7 @@ export function GraphView({ scope = 'code', initialNodeId, focusNonce = 0 }: Pro
   </div>
 }
 
-function NodeInspector({ node, groups, hasCalls, neighborCount, scope, theme, projectId, revision,
+function NodeInspector({ node, groups, hasCalls, neighborCount, scope, theme, projectId, revision, rev,
   onBack, onSelect, onOpen, onAsk }: {
   node: GraphNode
   groups: RelationGroup[]
@@ -428,6 +435,7 @@ function NodeInspector({ node, groups, hasCalls, neighborCount, scope, theme, pr
   theme: GraphTheme
   projectId: number
   revision: number
+  rev: string | null
   onBack: () => void
   onSelect: (id: string) => void
   onOpen: (node: GraphNode) => void
@@ -464,8 +472,8 @@ function NodeInspector({ node, groups, hasCalls, neighborCount, scope, theme, pr
       onOpen={onOpen}
     />) : <p className="graph-empty-line">此节点没有直接关联。</p>}
 
-    <RelationshipSummary key={node.id + ':' + revision}
-      scope={scope} projectId={projectId} nodeId={node.id} neighborCount={neighborCount} />
+    <RelationshipSummary key={node.id + ':' + revision + ':' + (rev ?? 'worktree')}
+      scope={scope} projectId={projectId} nodeId={node.id} neighborCount={neighborCount} rev={rev} />
   </section>
 }
 

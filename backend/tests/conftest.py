@@ -43,6 +43,7 @@ def conn_reset():
     with db.write_conn() as conn:
         for table in (
             "code_anchors",
+            "note_refs",
             "notes",
             "note_folders",
             "command_rules",
@@ -59,6 +60,8 @@ def conn_reset():
             "graph_layouts",
             "symbol_refs",
             "symbol_defs",
+            "revision_symbol_refs",
+            "revision_symbol_defs",
             "projects",
         ):
             conn.execute(f"DELETE FROM {table}")

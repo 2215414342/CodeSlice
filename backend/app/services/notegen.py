@@ -275,12 +275,29 @@ def _first_sentence(text: str, limit: int = TITLE_MAX_CHARS) -> str:
     return _clip_title(body)
 
 
+def _hash_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
+
+
 def _refs_from_citations(conversation: dict[str, Any], citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Read cited ranges from disk so the note keeps the real snippets."""
+    """Read cited ranges from disk so the note keeps the real snippets.
+
+    Each ref also records the revision it was read from. Without that stamp the
+    note knows *what* it quoted but not *which* version, and a later rewrite
+    makes every location in the note a guess.
+    """
+    from app.services import git_service
+
     project = repo.get_project(int(conversation["project_id"]))
     if project is None:
         return []
-    root = Path(project["path"])
+    try:
+        root = paths.resolve_root(project["path"])
+    except AppError:
+        return []
+    commit = git_service.head_sha(root)
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, int, int]] = set()
     for citation in citations:
@@ -305,6 +322,9 @@ def _refs_from_citations(conversation: dict[str, Any], citations: list[dict[str,
                 "end_line": end,
                 "symbol": citation.get("symbol"),
                 "code": snippet,
+                "commit_sha": commit,
+                "code_hash": _hash_text(snippet) if snippet else None,
+                "worktree_dirty": bool(commit and git_service.worktree_dirty(root, path)),
             }
         )
     return out
@@ -403,6 +423,11 @@ def render_code_section(refs: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for ref in refs:
         header = f"### {ref['path']}:{ref['start_line']}-{ref['end_line']}"
+        # The short sha is part of the header on purpose: an exported .md file
+        # has no app around it, so the version has to travel with the text.
+        short = str(ref.get("commit_sha") or "")[:7]
+        if short:
+            header += f" @{short}"
         if ref.get("symbol"):
             header += f"（{ref['symbol']}）"
         if ref.get("code"):
@@ -544,17 +569,62 @@ def _store_note(
     title: str,
     file_name: str,
     content: str,
+    refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Create or refresh the single note owned by a conversation."""
+    """Create or refresh the single note owned by a conversation.
+
+    The note is also stamped with the revision it was built from and its refs
+    are indexed as rows, so the knowledge base can later answer "which version
+    is this about?" without parsing the rendered Markdown.
+    """
+    from app.services import git_service
+
+    project = repo.get_project(int(conversation["project_id"]))
+    base_commit: str | None = None
+    if project is not None:
+        try:
+            base_commit = git_service.head_sha(paths.resolve_root(project["path"]))
+        except Exception:
+            base_commit = None
+    dirty = any(bool(ref.get("worktree_dirty")) for ref in (refs or []))
+    note_id: int | None = None
     existing = repo.find_note_for_conversation(conversation_id)
     if existing is not None:
         note = repo.update_note(int(existing["id"]), title, content, file_name=file_name)
+        note_id = int(existing["id"])
     else:
         note = repo.create_note(
-            int(conversation["project_id"]), title, content, conversation_id, file_name=file_name
+            int(conversation["project_id"]),
+            title,
+            content,
+            conversation_id,
+            file_name=file_name,
+            base_commit=base_commit,
+            base_dirty=dirty,
         )
+        note_id = int(note["id"]) if note else None
     if note is None:  # pragma: no cover - defensive, update_note only fails if deleted meanwhile
         raise NotFound("note not found")
+    if note_id is not None:
+        repo.set_note_base(note_id, base_commit, dirty)
+        repo.replace_note_refs(
+            note_id,
+            int(conversation["project_id"]),
+            [
+                {
+                    "path": ref["path"],
+                    "start_line": ref["start_line"],
+                    "end_line": ref["end_line"],
+                    "symbol": ref.get("symbol"),
+                    "commit_sha": ref.get("commit_sha"),
+                    "snippet": ref.get("code"),
+                    "code_hash": ref.get("code_hash"),
+                    "status": "unchanged",
+                }
+                for ref in (refs or [])
+            ],
+        )
+        note = repo.get_note(note_id) or note
     return note
 
 
@@ -585,7 +655,7 @@ def generate(conversation_id: str, message_id: str) -> dict[str, Any]:
     content_title = _resolve_title(sections, body, project)
     filename_title = _resolve_filename_title(sections, content_title, body, project)
     content = compose(content_title, sections, refs)
-    note = _store_note(conversation, conversation_id, content_title, filename_title, content)
+    note = _store_note(conversation, conversation_id, content_title, filename_title, content, refs)
 
     indexed = _index_note(note)
     return {
@@ -638,7 +708,7 @@ def generate_from_conversation(conversation_id: str) -> dict[str, Any]:
     content_title = _resolve_title(sections, transcript, project)
     filename_title = _resolve_filename_title(sections, content_title, transcript, project)
     content = compose(content_title, sections, refs)
-    note = _store_note(conversation, conversation_id, content_title, filename_title, content)
+    note = _store_note(conversation, conversation_id, content_title, filename_title, content, refs)
 
     indexed = _index_note(note)
     return {
