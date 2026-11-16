@@ -17,6 +17,7 @@ export function GitVersionPicker(): ReactNode {
   const projectId = project?.id ?? null
   const [open, setOpen] = useState(false)
   const [branches, setBranches] = useState<GitBranches | null>(null)
+  const [head, setHead] = useState<{ current: string | null; detached: boolean } | null>(null)
   const [commits, setCommits] = useState<GitCommit[]>([])
   const [sha, setSha] = useState('')
   const [busy, setBusy] = useState(false)
@@ -33,6 +34,7 @@ export function GitVersionPicker(): ReactNode {
         api.listGitCommits(projectId, { limit: 15 }),
       ])
       setBranches(refs)
+      setHead({ current: refs.current, detached: refs.detached })
       setCommits(log.commits)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -65,9 +67,27 @@ export function GitVersionPicker(): ReactNode {
   // A different project has a different history; drop what we cached.
   useEffect(() => {
     setBranches(null)
+    setHead(null)
     setCommits([])
     setError(null)
     setSha('')
+  }, [projectId])
+
+  // The trigger names the branch the work tree is on, so read it before the
+  // menu is opened. A failed git read simply leaves the plain "工作区" label.
+  useEffect(() => {
+    if (projectId === null) {
+      setHead(null)
+      return
+    }
+    const controller = new AbortController()
+    api
+      .getGitBranches(projectId, controller.signal)
+      .then((refs) => setHead({ current: refs.current, detached: refs.detached }))
+      .catch(() => {
+        if (!controller.signal.aborted) setHead(null)
+      })
+    return () => controller.abort()
   }, [projectId])
 
   const pin = async (ref: string, name?: string) => {
@@ -93,8 +113,15 @@ export function GitVersionPicker(): ReactNode {
 
   if (projectId === null) return null
 
+  const branch = branches ? branches.current : head?.current ?? null
+  const detached = branches ? branches.detached : Boolean(head?.detached)
+  const worktreeName = branch ?? (detached ? '游离 HEAD' : null)
   const label =
-    revision.kind === 'worktree' ? '工作区' : revision.name ?? revision.shaShort
+    revision.kind === 'worktree'
+      ? worktreeName
+        ? `工作区 · ${worktreeName}`
+        : '工作区'
+      : revision.name ?? revision.shaShort
   const historical = revision.kind === 'rev'
 
   return (
@@ -104,7 +131,9 @@ export function GitVersionPicker(): ReactNode {
         title={
           historical
             ? `只读 · ${revision.sha}`
-            : '当前显示工作区；可切换到某个分支或提交查看历史代码'
+            : worktreeName
+              ? `当前工作区：${worktreeName}（最新代码，可编辑）`
+              : '当前显示工作区；可切换到某个分支或提交查看历史代码'
         }
         aria-haspopup="menu"
         aria-expanded={open}
@@ -120,14 +149,15 @@ export function GitVersionPicker(): ReactNode {
         <div className="revision-menu" role="menu">
           <button
             className={`revision-item${revision.kind === 'worktree' ? ' current' : ''}`}
+            title={worktreeName ? `最新代码，可编辑 · 当前分支 ${worktreeName}` : '最新代码，可编辑'}
             onClick={() => {
               setRevision({ kind: 'worktree' })
               setOpen(false)
             }}
             type="button"
           >
-            <span className="revision-main">工作区</span>
-            <span className="revision-sub">最新代码，可编辑</span>
+            <span className="revision-label">工作区{worktreeName ? ` · ${worktreeName}` : ''}</span>
+            <span className="revision-meta">最新代码</span>
           </button>
 
           {busy && !branches ? <div className="revision-note">读取 Git 信息…</div> : null}
@@ -144,11 +174,9 @@ export function GitVersionPicker(): ReactNode {
                   title={`${branch.name} · ${branch.sha}`}
                   type="button"
                 >
-                  <span className="revision-main">
-                    {branch.name}
-                    {branch.current ? <span className="badge ok">当前</span> : null}
-                  </span>
-                  <span className="revision-sub">{branch.sha_short}</span>
+                  <span className="revision-label">{branch.name}</span>
+                  {branch.current ? <em className="revision-chip">当前</em> : null}
+                  <span className="revision-meta mono">{branch.sha_short}</span>
                 </button>
               ))}
             </>
@@ -165,8 +193,8 @@ export function GitVersionPicker(): ReactNode {
                   title={`${tag.name} · ${tag.sha}`}
                   type="button"
                 >
-                  <span className="revision-main">{tag.name}</span>
-                  <span className="revision-sub">{tag.sha_short}</span>
+                  <span className="revision-label">{tag.name}</span>
+                  <span className="revision-meta mono">{tag.sha_short}</span>
                 </button>
               ))}
             </>
@@ -180,13 +208,11 @@ export function GitVersionPicker(): ReactNode {
                   key={`commit:${commit.sha}`}
                   className="revision-item"
                   onClick={() => void pin(commit.sha, commit.subject)}
-                  title={`${commit.sha}\n${commit.author} · ${commit.author_time}`}
+                  title={`${commit.subject}\n${commit.sha}\n${commit.author} · ${commit.author_time}`}
                   type="button"
                 >
-                  <span className="revision-main commit-subject">{commit.subject}</span>
-                  <span className="revision-sub">
-                    {commit.sha_short} · {commit.author}
-                  </span>
+                  <span className="revision-label">{commit.subject}</span>
+                  <span className="revision-meta mono">{commit.sha_short}</span>
                 </button>
               ))}
             </>

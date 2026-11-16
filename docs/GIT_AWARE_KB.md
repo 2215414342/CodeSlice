@@ -549,6 +549,8 @@ P2 才把图谱接上（成本最高，且依赖 P1 的取数层）；P3 是三�
 **前端**
 
 - `AppState.openRefCode` 打开 file 标签（不是 diff），并把 SCM 面板聚焦到对应 commit/file；
+- 引用跳转不移动全局 revision：历史引用只在代码标签和 SCM 侧栏打开对应提交，
+  顶部版本选择器仍停在用户自己选择的工作区/分支；只有用户显式切换版本时才整页切换；
 - 目标 revision 由引用状态决定：
   - `unchanged` / `moved` → 当前 scope（工作区为 `null`，历史视图为当前 `rev`）；
   - 其余 → `resolved_commit || commit_sha`；

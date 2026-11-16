@@ -838,7 +838,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
           const target = result.targets[0]
           // Frame the declaration line, not the whole body: jumping to a large
           // function should read as "here is the definition", not "select 60 lines".
-          navigateTo(target.path, target.line, target.line)
+          navigateTo(target.path, target.line, target.line, rev)
           setNavFlash({
             path: target.path,
             line: target.line,
@@ -924,7 +924,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
   const pickNavChoice = useCallback(
     (item: NavChoice) => {
       setNavPicker(null)
-      navigateTo(item.path, item.line, item.end_line)
+      navigateTo(item.path, item.line, item.end_line, rev)
       if (item.symbolName) {
         setNavFlash({
           path: item.path,
@@ -935,7 +935,7 @@ export function CodePane({ onAskSelection, onOpenFile }: CodePaneProps): ReactNo
         })
       }
     },
-    [navigateTo],
+    [navigateTo, rev],
   )
 
   navHandlersRef.current = {

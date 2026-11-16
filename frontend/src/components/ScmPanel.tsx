@@ -48,7 +48,10 @@ interface CommitStats {
 export function ScmPanel(): ReactNode {
   const { project, revision, setRevision, openDiff, scmFocus, refreshKey } = useApp()
   const projectId = project?.id ?? null
-  const rev = revision.kind === 'rev' ? revision.sha : null
+  const scopeRev = revision.kind === 'rev' ? revision.sha : null
+  // A note jump opens a historical file beside the worktree; the sidebar follows
+  // that transient focus without moving the app's global scope.
+  const rev = scmFocus ? scmFocus.rev : scopeRev
 
   const changes = useAsync(
     (signal) => (projectId ? api.getScmChanges(projectId, rev, signal) : Promise.resolve(null)),

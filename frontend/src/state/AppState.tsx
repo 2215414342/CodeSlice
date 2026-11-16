@@ -122,7 +122,7 @@ interface AppState {
    * range, and pushes onto the back/forward stack. Unlike `reveal`, jumping to
    * the same place twice keeps the highlight instead of toggling it off.
    */
-  navigateTo: (path: string, start?: number, end?: number) => void
+  navigateTo: (path: string, start?: number, end?: number, rev?: string | null) => void
   navHistory: NavHistoryEntry[]
   navIndex: number
   canGoBack: boolean
@@ -227,8 +227,9 @@ interface AppState {
   /**
    * Jump from a note reference into the code itself.
    *
-   * Current references open the work tree/file at their resolved lines; only
-   * references whose exact block is gone switch to the historical commit.
+   * Current references open the work tree/file at their resolved lines; a
+   * reference whose exact block is gone opens the historical commit as a
+   * read-only tab. The global revision stays where the user put it.
    */
   openRefCode: (
     rev: string | null,
@@ -377,6 +378,9 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
     setCitationHighlight(null)
     setNavHistory([])
     setNavIndex(-1)
+    // An explicit scope change owns the sidebar; a note's historical view must
+    // not keep it pinned to a commit the user has moved away from.
+    setScmFocus(null)
   }, [])
 
   /** Open a read-only diff tab, reusing the one for the same path and scope. */
@@ -409,18 +413,12 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   )
 
   /**
-   * A note ref jump is allowed to change the revision: the reference belongs to
-   * the commit the note was written against, so showing the work tree's diff
-   * would answer a different question.
-   */
-  /**
    * Open the file, not the diff, for a note reference.
    *
-   * If the note's exact block still exists in the current file, `rev` is null
-   * and the editor shows the live work tree at the re-resolved line. If it is
-   * gone, `rev` is the note's commit and the editor shows that revision read
-   * only. Reusing the same scope avoids dropping every other file tab on
-   * repeated clicks.
+   * The note's revision belongs to the reading jump, not to the app: a
+   * historical ref opens a read-only file tab at that commit while the global
+   * worktree/branch scope the user chose stays put. The source-control sidebar
+   * follows the focus so the commit context is still visible beside the code.
    */
   const openRefCode = useCallback(
     (
@@ -430,13 +428,6 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
       origin?: { label?: string; noteId?: number | null; conversationId?: string | null },
     ) => {
       const range = highlight && highlight.start > 0 ? highlight : null
-      const sameScope =
-        rev === null
-          ? revision.kind === 'worktree'
-          : revision.kind === 'rev' && revision.sha === rev
-      if (!sameScope) {
-        setRevision(rev ? { kind: 'rev', sha: rev, shaShort: rev.slice(0, 7) } : { kind: 'worktree' })
-      }
       setSidebarTabState('scm')
       setScmFocus({ rev, path, highlight: range, nonce: Date.now(), source: 'note' })
       openFileTab(path, range, rev ?? undefined)
@@ -454,7 +445,7 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
         })
       }
     },
-    [openFileTab, revision, setRevision, setSidebarTabState],
+    [openFileTab, setSidebarTabState],
   )
 
   const showNavEntry = useCallback(
@@ -475,15 +466,18 @@ export function AppProvider({ children }: { children: ReactNode }): ReactNode {
   )
 
   const navigateTo = useCallback(
-    (path: string, start?: number, end?: number) => {
+    (path: string, start?: number, end?: number, targetRev?: string | null) => {
       const from = start && start > 0 ? start : 1
       const to = end && end >= from ? end : from
-      const entry = { path, start_line: from, end_line: to, rev: currentRev }
+      // A definition/reference jump inside a historical tab must stay in that
+      // revision even when the global scope is the work tree.
+      const jumpRev = targetRev === undefined ? currentRev : targetRev ?? undefined
+      const entry = { path, start_line: from, end_line: to, rev: jumpRev }
       showNavEntry(entry)
       setNavHistory((prev) => {
         const base = navIndex >= 0 ? prev.slice(0, navIndex + 1) : []
         const last = base[base.length - 1]
-        if (last && last.path === path && last.start_line === from && last.end_line === to && last.rev === currentRev) {
+        if (last && last.path === path && last.start_line === from && last.end_line === to && last.rev === jumpRev) {
           setNavIndex(base.length - 1)
           return base
         }
